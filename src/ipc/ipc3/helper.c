@@ -14,8 +14,8 @@
 #include <sof/ipc/topology.h>
 #include <sof/ipc/common.h>
 #include <sof/ipc/msg.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/cache.h>
+#include <rtos/alloc.h>
+#include <rtos/cache.h>
 #include <sof/lib/mailbox.h>
 #include <sof/list.h>
 #include <sof/platform.h>
@@ -28,6 +28,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+LOG_MODULE_DECLARE(ipc, CONFIG_SOF_LOG_LEVEL);
 
 extern struct tr_ctx comp_tr;
 
@@ -217,6 +219,7 @@ static void comp_specific_builder(struct sof_ipc_comp *comp,
 		config->file.frame_fmt = file->frame_fmt;
 		config->file.mode = file->mode;
 		config->file.rate = file->rate;
+		config->file.direction = file->direction;
 		break;
 #else
 	case SOF_COMP_HOST:
@@ -270,11 +273,15 @@ static void comp_specific_builder(struct sof_ipc_comp *comp,
 	case SOF_COMP_MUX:
 	case SOF_COMP_DCBLOCK:
 	case SOF_COMP_SMART_AMP:
-	case SOF_COMP_CODEC_ADAPTOR:
+	case SOF_COMP_MODULE_ADAPTER:
 	case SOF_COMP_NONE:
 		config->process.type = proc->type;
 		config->process.size = proc->size;
+#if CONFIG_LIBRARY
+		config->process.data = proc->data + comp->ext_data_length;
+#else
 		config->process.data = proc->data;
+#endif
 		break;
 	default:
 		break;
@@ -465,6 +472,7 @@ int ipc_buffer_free(struct ipc *ipc, uint32_t buffer_id)
 	unsigned int core;
 	bool sink_active = false;
 	bool source_active = false;
+	struct comp_buffer __sparse_cache *buffer_c;
 
 	/* check whether buffer exists */
 	ibd = ipc_get_comp_by_id(ipc, buffer_id);
@@ -482,6 +490,8 @@ int ipc_buffer_free(struct ipc *ipc, uint32_t buffer_id)
 	if (!cpu_is_me(ibd->core))
 		return ipc_process_on_core(ibd->core, false);
 
+	buffer_c = buffer_acquire(ibd->cb);
+
 	/* try to find sink/source components to check if they still exists */
 	list_for_item(clist, &ipc->comp_list) {
 		icd = container_of(clist, struct ipc_comp_dev, list);
@@ -489,18 +499,20 @@ int ipc_buffer_free(struct ipc *ipc, uint32_t buffer_id)
 			continue;
 
 		/* check comp state if sink and source are valid */
-		if (ibd->cb->sink == icd->cd &&
-		    ibd->cb->sink->state != COMP_STATE_READY) {
-			sink = ibd->cb->sink;
-			sink_active = true;
+		if (buffer_c->sink == icd->cd) {
+			sink = buffer_c->sink;
+			if (buffer_c->sink->state != COMP_STATE_READY)
+				sink_active = true;
 		}
 
-		if (ibd->cb->source == icd->cd &&
-		    ibd->cb->source->state != COMP_STATE_READY) {
-			source = ibd->cb->source;
-			source_active = true;
+		if (buffer_c->source == icd->cd) {
+			source = buffer_c->source;
+			if (buffer_c->source->state != COMP_STATE_READY)
+				source_active = true;
 		}
 	}
+
+	buffer_release(buffer_c);
 
 	/*
 	 * A buffer could be connected to 2 different pipelines. When one pipeline is freed, the
@@ -549,46 +561,21 @@ int ipc_buffer_free(struct ipc *ipc, uint32_t buffer_id)
 static int ipc_comp_to_buffer_connect(struct ipc_comp_dev *comp,
 				      struct ipc_comp_dev *buffer)
 {
-
-	if (!cpu_is_me(comp->core))
-		return ipc_process_on_core(comp->core, false);
-
-	tr_dbg(&ipc_tr, "ipc: comp sink %d, source %d  -> connect", buffer->id,
+	tr_dbg(&ipc_tr, "ipc: comp sink %d, source %d -> connect", buffer->id,
 	       comp->id);
 
-	/* check if it's a connection between cores */
-	if (buffer->core != comp->core) {
-
-		/* set the buffer as a coherent object */
-		coherent_shared(buffer->cb, c);
-
-		if (!comp->cd->is_shared)
-			comp->cd = comp_make_shared(comp->cd);
-	}
-
-	return pipeline_connect(comp->cd, buffer->cb, PPL_CONN_DIR_COMP_TO_BUFFER);
+	return comp_buffer_connect(comp->cd, comp->core, buffer->cb,
+				   PPL_CONN_DIR_COMP_TO_BUFFER);
 }
 
 static int ipc_buffer_to_comp_connect(struct ipc_comp_dev *buffer,
 				      struct ipc_comp_dev *comp)
 {
-	if (!cpu_is_me(comp->core))
-		return ipc_process_on_core(comp->core, false);
-
-	tr_dbg(&ipc_tr, "ipc: comp sink %d, source %d  -> connect", comp->id,
+	tr_dbg(&ipc_tr, "ipc: comp sink %d, source %d -> connect", comp->id,
 	       buffer->id);
 
-	/* check if it's a connection between cores */
-	if (buffer->core != comp->core) {
-
-		/* set the buffer as a coherent object */
-		coherent_shared(buffer->cb, c);
-
-		if (!comp->cd->is_shared)
-			comp->cd = comp_make_shared(comp->cd);
-	}
-
-	return pipeline_connect(comp->cd, buffer->cb, PPL_CONN_DIR_BUFFER_TO_COMP);
+	return comp_buffer_connect(comp->cd, comp->core, buffer->cb,
+				   PPL_CONN_DIR_BUFFER_TO_COMP);
 }
 
 int ipc_comp_connect(struct ipc *ipc, ipc_pipe_comp_connect *_connect)

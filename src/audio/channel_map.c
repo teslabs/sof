@@ -8,11 +8,13 @@
 #include <sof/lib/uuid.h>
 #include <sof/trace/trace.h>
 #include <user/trace.h>
-#include <sof/bit.h>
+#include <rtos/bit.h>
 #include <sof/common.h>
 #include <ipc/channel_map.h>
 #include <stdint.h>
 #include <stdlib.h>
+
+LOG_MODULE_REGISTER(channel_map, CONFIG_SOF_LOG_LEVEL);
 
 /* ec290e95-4a20-47eb-bbff-d9c888431831 */
 DECLARE_SOF_UUID("channel-map", chmap_uuid, 0xec290e95, 0x4a20, 0x47eb,

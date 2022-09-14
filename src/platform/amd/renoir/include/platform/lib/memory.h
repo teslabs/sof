@@ -11,7 +11,7 @@
 #ifndef __PLATFORM_LIB_MEMORY_H__
 #define __PLATFORM_LIB_MEMORY_H__
 
-#include <sof/lib/cache.h>
+#include <rtos/cache.h>
 #include <platform/chip_offset_byte.h>
 
 /* data cache line alignment */
@@ -54,11 +54,11 @@
 
 /* Mailbox configuration */
 #define SRAM_OUTBOX_BASE		0x22050000
-#define SRAM_OUTBOX_SIZE		0x200
+#define SRAM_OUTBOX_SIZE		0x400
 #define SRAM_OUTBOX_OFFSET		0
 
 #define SRAM_INBOX_BASE			(SRAM_OUTBOX_BASE + SRAM_OUTBOX_SIZE)
-#define SRAM_INBOX_SIZE			0x200
+#define SRAM_INBOX_SIZE			0x400
 #define SRAM_INBOX_OFFSET		SRAM_OUTBOX_SIZE
 
 #define SRAM_DEBUG_BASE			(SRAM_INBOX_BASE + SRAM_INBOX_SIZE)

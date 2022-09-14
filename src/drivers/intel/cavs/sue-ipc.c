@@ -12,12 +12,12 @@
 #include <sof/lib/mailbox.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/uuid.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <sof/list.h>
 #include <sof/schedule/edf_schedule.h>
 #include <sof/schedule/schedule.h>
 #include <sof/schedule/task.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <ipc/header.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -26,12 +26,12 @@
 DECLARE_SOF_UUID("ipc-task", ipc_task_uuid, 0x7552b3a1, 0x98dd, 0x4419,
 		 0xad, 0x6f, 0xfb, 0xf2, 0x1e, 0xbf, 0xce, 0xec);
 
-int ipc_platform_compact_write_msg(ipc_cmd_hdr *hdr, int words)
+int ipc_platform_compact_write_msg(struct ipc_cmd_hdr *hdr, int words)
 {
 	return 0; /* number of words read - not currently used on this platform */
 }
 
-int ipc_platform_compact_read_msg(ipc_cmd_hdr *hdr, int words)
+int ipc_platform_compact_read_msg(struct ipc_cmd_hdr *hdr, int words)
 {
 	return 0; /* number of words read - not currently used on this platform */
 }
@@ -39,7 +39,7 @@ int ipc_platform_compact_read_msg(ipc_cmd_hdr *hdr, int words)
 /* No private data for IPC */
 enum task_state ipc_platform_do_cmd(struct ipc *ipc)
 {
-	ipc_cmd_hdr *hdr;
+	struct ipc_cmd_hdr *hdr;
 	struct sof_ipc_reply reply;
 
 	/* perform command */

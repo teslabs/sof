@@ -27,6 +27,8 @@
 #include <ipc/stream.h>
 #include <ipc/topology.h>
 
+LOG_MODULE_DECLARE(ipc, CONFIG_SOF_LOG_LEVEL);
+
 int dai_config_dma_channel(struct comp_dev *dev, void *spec_config)
 {
 	struct dai_data *dd = comp_get_drvdata(dev);
@@ -71,6 +73,10 @@ int dai_config_dma_channel(struct comp_dev *dev, void *spec_config)
 		channel = dai_get_handshake(dd->dai, dai->direction,
 					    dd->stream_id);
 		break;
+	case SOF_DAI_AMD_HS:
+		channel = dai_get_handshake(dd->dai, dai->direction,
+					    dd->stream_id);
+		break;
 	case SOF_DAI_MEDIATEK_AFE:
 		handshake = dai_get_handshake(dd->dai, dai->direction,
 					      dd->stream_id);
@@ -92,6 +98,7 @@ int ipc_dai_data_config(struct comp_dev *dev)
 	struct dai_data *dd = comp_get_drvdata(dev);
 	struct ipc_config_dai *dai = &dd->ipc_config;
 	struct sof_ipc_dai_config *config = ipc_from_dai_config(dd->dai_spec_config);
+	struct comp_buffer __sparse_cache *buffer_c;
 
 	if (!config) {
 		comp_err(dev, "dai_data_config(): no config set for dai %d type %d",
@@ -123,7 +130,7 @@ int ipc_dai_data_config(struct comp_dev *dev)
 		break;
 	case SOF_DAI_INTEL_DMIC:
 		/* Depth is passed by DMIC driver that retrieves it from blob */
-		dd->config.burst_elems = dd->dai->plat_data.fifo->depth;
+		dd->config.burst_elems = dai_get_fifo_depth(dd->dai, dai->direction);
 		comp_info(dev, "dai_data_config() burst_elems = %d", dd->config.burst_elems);
 		break;
 	case SOF_DAI_INTEL_HDA:
@@ -133,11 +140,12 @@ int ipc_dai_data_config(struct comp_dev *dev)
 		 * all formats, such as 8/16/24/32 bits.
 		 */
 		dev->ipc_config.frame_fmt = SOF_IPC_FRAME_S32_LE;
-		dd->dma_buffer->stream.frame_fmt = dev->ipc_config.frame_fmt;
-
-		dd->config.burst_elems =
-			dd->dai->plat_data.fifo[dai->direction].depth;
-
+		if (dd->dma_buffer) {
+			buffer_c = buffer_acquire(dd->dma_buffer);
+			buffer_c->stream.frame_fmt = dev->ipc_config.frame_fmt;
+			buffer_release(buffer_c);
+		}
+		dd->config.burst_elems = dai_get_fifo_depth(dd->dai, dai->direction);
 		/* As with HDA, the DMA channel is assigned in runtime,
 		 * not during topology parsing.
 		 */
@@ -146,8 +154,7 @@ int ipc_dai_data_config(struct comp_dev *dev)
 	case SOF_DAI_IMX_SAI:
 		COMPILER_FALLTHROUGH;
 	case SOF_DAI_IMX_ESAI:
-		dd->config.burst_elems =
-			dd->dai->plat_data.fifo[dai->direction].depth;
+		dd->config.burst_elems = dai_get_fifo_depth(dd->dai, dai->direction);
 		break;
 	case SOF_DAI_AMD_BT:
 		dev->ipc_config.frame_fmt = SOF_IPC_FRAME_S16_LE;
@@ -157,7 +164,14 @@ int ipc_dai_data_config(struct comp_dev *dev)
 		break;
 	case SOF_DAI_AMD_DMIC:
 		dev->ipc_config.frame_fmt = SOF_IPC_FRAME_S32_LE;
-		dd->dma_buffer->stream.frame_fmt = dev->ipc_config.frame_fmt;
+		if (dd->dma_buffer) {
+			buffer_c = buffer_acquire(dd->dma_buffer);
+			buffer_c->stream.frame_fmt = dev->ipc_config.frame_fmt;
+			buffer_release(buffer_c);
+		}
+		break;
+	case SOF_DAI_AMD_HS:
+		dev->ipc_config.frame_fmt = SOF_IPC_FRAME_S16_LE;
 		break;
 	case SOF_DAI_MEDIATEK_AFE:
 		break;
@@ -259,7 +273,11 @@ void dai_dma_release(struct comp_dev *dev)
 	if (dd->chan) {
 		/* remove callback */
 		notifier_unregister(dev, dd->chan, NOTIFIER_ID_DMA_COPY);
-		dma_channel_put(dd->chan);
+#if CONFIG_ZEPHYR_NATIVE_DRIVERS
+		dma_release_channel(dd->chan->dma->z_dev, dd->chan->index);
+#else
+		dma_channel_put_legacy(dd->chan);
+#endif
 		dd->chan->dev_data = NULL;
 		dd->chan = NULL;
 	}
@@ -286,6 +304,8 @@ int dai_config(struct comp_dev *dev, struct ipc_config_dai *common_config,
 		return 0;
 	}
 
+	dd->dai_dev = dev;
+
 	switch (config->flags & SOF_DAI_CONFIG_FLAGS_CMD_MASK) {
 	case SOF_DAI_CONFIG_FLAGS_HW_PARAMS:
 		/* set the delayed_dma_stop flag */
@@ -304,7 +324,11 @@ int dai_config(struct comp_dev *dev, struct ipc_config_dai *common_config,
 
 		/* stop DMA and reset config for two-step stop DMA */
 		if (dd->delayed_dma_stop) {
-			ret = dma_stop_delayed(dd->chan);
+#if CONFIG_ZEPHYR_NATIVE_DRIVERS
+			ret = dma_stop(dd->chan->dma->z_dev, dd->chan->index);
+#else
+			ret = dma_stop_delayed_legacy(dd->chan);
+#endif
 			if (ret < 0)
 				return ret;
 
@@ -315,19 +339,22 @@ int dai_config(struct comp_dev *dev, struct ipc_config_dai *common_config,
 	case SOF_DAI_CONFIG_FLAGS_PAUSE:
 		if (!dd->chan)
 			return 0;
-
-		return dma_stop_delayed(dd->chan);
+#if CONFIG_ZEPHYR_NATIVE_DRIVERS
+		return dma_stop(dd->chan->dma->z_dev, dd->chan->index);
+#else
+		return dma_stop_delayed_legacy(dd->chan);
+#endif
 	default:
 		break;
 	}
-
+#if CONFIG_COMP_DAI_GROUP
 	if (config->group_id) {
 		ret = dai_assign_group(dev, config->group_id);
 
 		if (ret)
 			return ret;
 	}
-
+#endif
 	/* do nothing for asking for channel free, for compatibility. */
 	if (dai_config_dma_channel(dev, spec_config) == DMA_CHAN_INVALID)
 		return 0;
@@ -357,7 +384,7 @@ int dai_position(struct comp_dev *dev, struct sof_ipc_stream_posn *posn)
 	struct dai_data *dd = comp_get_drvdata(dev);
 
 	/* TODO: improve accuracy by adding current DMA position */
-	posn->dai_posn = dev->position;
+	posn->dai_posn = dd->total_data_processed;
 
 	/* set stream start wallclock */
 	posn->wallclock = dd->wallclock;

@@ -10,22 +10,22 @@
 #include <xtensa/core-macros.h>
 #include <platform/chip_offset_byte.h>
 #include <platform/chip_registers.h>
-#include <sof/drivers/interrupt.h>
+#include <rtos/interrupt.h>
 #include <sof/ipc/driver.h>
 #include <sof/ipc/msg.h>
 #include <sof/ipc/schedule.h>
-#include <sof/lib/alloc.h>
+#include <rtos/alloc.h>
 #include <sof/lib/dma.h>
 #include <sof/lib/mailbox.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/uuid.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <sof/list.h>
 #include <sof/platform.h>
 #include <sof/schedule/edf_schedule.h>
 #include <sof/schedule/schedule.h>
 #include <sof/schedule/task.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <ipc/header.h>
 #include <ipc/topology.h>
 #include <errno.h>
@@ -139,7 +139,7 @@ static void irq_handler(void *arg)
 
 enum task_state ipc_platform_do_cmd(struct ipc *ipc)
 {
-	ipc_cmd_hdr *hdr;
+	struct ipc_cmd_hdr *hdr;
 
 	hdr = mailbox_validate();
 	ipc_cmd(hdr);

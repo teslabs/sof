@@ -18,6 +18,8 @@
 #include <stdint.h>
 #include <ipc4/alh.h>
 
+LOG_MODULE_REGISTER(alh_dai, CONFIG_SOF_LOG_LEVEL);
+
 /* a8e4218c-e863-4c93-84e7-5c27d2504501 */
 DECLARE_SOF_UUID("alh-dai", alh_uuid, 0xa8e4218c, 0xe863, 0x4c93,
 		 0x84, 0xe7, 0x5c, 0x27, 0xd2, 0x50, 0x45, 0x01);
@@ -57,13 +59,22 @@ static int alh_set_config_blob(struct dai *dai, struct ipc_config_dai *common_co
 	struct alh_pdata *alh = dai_get_drvdata(dai);
 	struct sof_alh_configuration_blob *blob = spec_config;
 	struct ipc4_alh_multi_gtw_cfg *alh_cfg = &blob->alh_cfg;
+	int i;
 
 	dai_info(dai, "alh_set_config_blob()");
 
-	alh->params.channels = 2;
-	alh->params.rate = 48000;
-	/* the LSB 8bits are for stream id */
-	alh->params.stream_id = alh_cfg->mapping[0].alh_id & 0xff;
+	alh->params.rate = common_config->sampling_frequency;
+
+	for (i = 0; i < alh_cfg->count; i++) {
+		/* the LSB 8bits are for stream id */
+		int alh_id = alh_cfg->mapping[i].alh_id & 0xff;
+
+		if (IPC4_ALH_DAI_INDEX(alh_id) == dai->index) {
+			alh->params.stream_id = alh_id;
+			alh->params.channels = popcount(alh_cfg->mapping[i].channel_mask);
+			break;
+		}
+	}
 
 	return 0;
 }
@@ -144,6 +155,11 @@ static int alh_get_fifo(struct dai *dai, int direction, int stream_id)
 	return ALH_BASE + offset + ALH_STREAM_OFFSET * stream_id;
 }
 
+static int alh_get_fifo_depth(struct dai *dai, int direction)
+{
+	return dai->plat_data.fifo[direction].depth;
+}
+
 const struct dai_driver alh_driver = {
 	.type = SOF_DAI_INTEL_ALH,
 	.uid = SOF_UUID(alh_uuid),
@@ -156,6 +172,7 @@ const struct dai_driver alh_driver = {
 		.get_hw_params		= alh_get_hw_params,
 		.get_handshake		= alh_get_handshake,
 		.get_fifo		= alh_get_fifo,
+		.get_fifo_depth		= alh_get_fifo_depth,
 		.probe			= alh_probe,
 		.remove			= alh_remove,
 	},

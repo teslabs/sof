@@ -5,14 +5,14 @@
 //Author:	Basavaraj Hiregoudar <basavaraj.hiregoudar@amd.com>
 //		Anup Kulkarni <anup.kulkarni@amd.com>
 
-#include <sof/atomic.h>
+#include <rtos/atomic.h>
 #include <sof/audio/component.h>
-#include <sof/bit.h>
+#include <rtos/bit.h>
 #include <sof/drivers/acp_dai_dma.h>
-#include <sof/drivers/interrupt.h>
-#include <sof/drivers/timer.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/clk.h>
+#include <rtos/interrupt.h>
+#include <rtos/timer.h>
+#include <rtos/alloc.h>
+#include <rtos/clk.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/dma.h>
 #include <sof/lib/io.h>
@@ -20,7 +20,7 @@
 #include <sof/lib/notifier.h>
 #include <sof/platform.h>
 #include <sof/schedule/schedule.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <sof/math/numbers.h>
 #include <sof/trace/trace.h>
 #include <ipc/topology.h>
@@ -80,7 +80,6 @@ static int acp_dmic_dma_start(struct dma_chan_data *channel)
 {
 	acp_wov_pdm_no_of_channels_t pdm_channels;
 	acp_wov_pdm_decimation_factor_t deci_fctr;
-	acp_wov_clk_ctrl_t clk_ctrl;
 	acp_wov_misc_ctrl_t wov_misc_ctrl;
 	acp_wov_pdm_dma_enable_t  pdm_dma_enable;
 	struct timer *timer = timer_get();
@@ -96,10 +95,6 @@ static int acp_dmic_dma_start(struct dma_chan_data *channel)
 		deci_fctr.u32all = 2;
 		io_reg_write(PU_REGISTER_BASE + ACP_WOV_PDM_DECIMATION_FACTOR,
 							deci_fctr.u32all);
-		/* DMIC Clock */
-		clk_ctrl.bits.brm_clk_ctrl = 7;
-		io_reg_write(PU_REGISTER_BASE + ACP_WOV_CLK_CTRL,
-						clk_ctrl.u32all);
 		/* PDM Control */
 		wov_misc_ctrl = (acp_wov_misc_ctrl_t)
 			io_reg_read(PU_REGISTER_BASE + ACP_WOV_MISC_CTRL);
@@ -222,7 +217,7 @@ static int acp_dmic_dma_set_config(struct dma_chan_data *channel,
 		io_reg_write(PU_REGISTER_BASE +
 			ACP_WOV_RX_RINGBUFSIZE, dmic_ringbuff_size.u32all);
 		/* Write the ring buffer size to register */
-		watermark.bits.rx_intr_watermark_size = dmic_rngbuff_size/2;
+		watermark.bits.rx_intr_watermark_size = (dmic_rngbuff_size >> 1);
 		io_reg_write(PU_REGISTER_BASE +
 			ACP_WOV_RX_INTR_WATERMARK_SIZE, watermark.u32all);
 		break;
@@ -298,8 +293,8 @@ static int acp_dmic_dma_get_data_size(struct dma_chan_data *channel,
 				   uint32_t *avail, uint32_t *free)
 {
 	if (channel->direction == DMA_DIR_DEV_TO_MEM) {
-		*avail = dmic_rngbuff_size/2;
-		*free = dmic_rngbuff_size/2;
+		*avail = dmic_rngbuff_size >> 1;
+		*free = dmic_rngbuff_size >> 1;
 	} else
 		tr_err(&acp_dmic_dma_tr, "Channel direction Not defined %d",
 				channel->direction);
@@ -340,8 +335,7 @@ static int acp_dmic_dma_interrupt(struct dma_chan_data *channel, enum dma_irq_cm
 		status = acp_intr_stat.bits.wov_dma_stat;
 		return status;
 	case DMA_IRQ_CLEAR:
-		acp_intr_stat = (acp_dsp0_intr_stat_t)
-				(dma_reg_read(channel->dma, ACP_DSP0_INTR_STAT));
+		acp_intr_stat.u32all = 0;
 		acp_intr_stat.bits.wov_dma_stat = 1;
 		status = acp_intr_stat.u32all;
 		dma_reg_write(channel->dma, ACP_DSP0_INTR_STAT, status);

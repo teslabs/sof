@@ -8,17 +8,49 @@ name: Zephyr
 on: [push, pull_request, workflow_dispatch]
 
 jobs:
-  zephyr-build:
+  build:
     runs-on: ubuntu-20.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        IPC_platforms: [
+          # IPC3
+          apl cnl,
+          icl jsl,
+          tgl tgl-h,
+          imx8 imx8x imx8m,
+          # only tgl has IPC4 overlay file now
+          -i IPC4 tgl,
+        ]
+        zephyr_revision: [
+          manifest_revision,
+          "https://github.com/zephyrproject-rtos/zephyr  main",
+        ]
+
     steps:
       - uses: actions/checkout@v2
         # From time to time this will catch a git tag and change SOF_VERSION
-        with: {fetch-depth: 10, submodules: recursive}
+        with:
+          fetch-depth: 10
+          path: ./workspace/sof
 
+      - name: west clones
+        run: pip3 install west && cd workspace/sof/ && west init -l &&
+               west update --narrow --fetch-opt=--depth=5
+
+      - name: select zephyr revision
+        run: cd workspace/zephyr/ &&
+             if [ 'manifest_revision' != '${{ matrix.zephyr_revision }}' ]; then
+                 git fetch --depth 5 ${{ matrix.zephyr_revision }} &&
+                 git checkout FETCH_HEAD;
+             fi &&
+             git log --oneline -n 5 --decorate --graph --no-abbrev-commit
+
+      # https://github.com/zephyrproject-rtos/docker-image
       # Note: env variables can be passed to the container with
       # -e https_proxy=...
       - name: build
-        run: docker run -v "$(pwd)":/workdir
-             docker.io/zephyrprojectrtos/zephyr-build:latest
-             ./zephyr/docker-build.sh --cmake-args=-DEXTRA_CFLAGS=-Werror
-             --cmake-args=--warn-uninitialized   -a
+        run: cd workspace && ./sof/zephyr/docker-run.sh
+             ./sof/zephyr/docker-build.sh --cmake-args=-DEXTRA_CFLAGS=-Werror
+             --cmake-args=--warn-uninitialized ${{ matrix.IPC_platforms }}

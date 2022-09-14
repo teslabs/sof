@@ -6,12 +6,12 @@
 
 #include <sof/common.h>
 #include <sof/drivers/ssp.h>
-#include <sof/lib/clk.h>
+#include <rtos/clk.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/notifier.h>
 #include <sof/lib/pm_runtime.h>
 #include <sof/sof.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 
 #include <cavs/version.h>
 
@@ -139,7 +139,7 @@ static SHARED_DATA int active_freq_idx = CPU_DEFAULT_IDX;
  */
 static inline void set_cpu_current_freq_idx(int freq_idx, bool release_unused)
 {
-	int *uncached_freq_idx = cache_to_uncache(&active_freq_idx);
+	int *uncached_freq_idx = cache_to_uncache((__sparse_force void __sparse_cache *)&active_freq_idx);
 
 	select_cpu_clock(freq_idx, release_unused);
 	*uncached_freq_idx = freq_idx;
@@ -162,7 +162,7 @@ static inline int get_lowest_freq_idx(int clock)
 static void platform_clock_low_power_mode(int clock, bool enable)
 {
 	int current_freq_idx = get_current_freq_idx(clock);
-	int freq_idx = *cache_to_uncache(&active_freq_idx);
+	int freq_idx = *(int *)cache_to_uncache((__sparse_force void __sparse_cache *)&active_freq_idx);
 
 	if (enable && current_freq_idx > CPU_LPRO_FREQ_IDX)
 		/* LPRO requests are fast, but requests for other ROs
@@ -186,7 +186,7 @@ void platform_clock_on_waiti(void)
 	/* hold the prd->lock for possible active_freq_idx switching */
 	key = k_spin_lock(&prd->lock);
 
-	freq_idx = *cache_to_uncache(&active_freq_idx);
+	freq_idx = *(int *)cache_to_uncache((__sparse_force void __sparse_cache *)&active_freq_idx);
 	lowest_freq_idx = get_lowest_freq_idx(CLK_CPU(cpu_get_id()));
 	pm_is_active = pm_runtime_is_active(PM_RUNTIME_DSP, PLATFORM_PRIMARY_CORE_ID);
 
@@ -261,7 +261,7 @@ void platform_clock_on_waiti(void)
 	/* hold the prd->lock for possible active_freq_idx switching */
 	key = k_spin_lock(&prd->lock);
 
-	freq_idx = *cache_to_uncache(&active_freq_idx);
+	freq_idx = *(int *)cache_to_uncache(&active_freq_idx);
 	lowest_freq_idx = get_lowest_freq_idx(CLK_CPU(cpu_get_id()));
 	pm_is_active = pm_runtime_is_active(PM_RUNTIME_DSP, PLATFORM_PRIMARY_CORE_ID);
 
@@ -289,7 +289,7 @@ void platform_clock_on_wakeup(void)
 	key = k_spin_lock(&prd->lock);
 
 	current_idx = get_current_freq_idx(CLK_CPU(cpu_get_id()));
-	target_idx = *cache_to_uncache(&active_freq_idx);
+	target_idx = *(int *)cache_to_uncache(&active_freq_idx);
 
 	/* restore the active cpu freq_idx manually */
 	if (current_idx != target_idx)

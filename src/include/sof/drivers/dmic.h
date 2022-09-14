@@ -38,28 +38,24 @@
 #if CONFIG_APOLLOLAKE
 #define DMIC_HW_VERSION		1
 #define DMIC_HW_CONTROLLERS	2
-#define DMIC_HW_IOCLK		19200000
 #define DMIC_HW_FIFOS		2
 #endif
 
 #if CONFIG_CANNONLAKE
 #define DMIC_HW_VERSION		1
 #define DMIC_HW_CONTROLLERS	2
-#define DMIC_HW_IOCLK		24000000
 #define DMIC_HW_FIFOS		2
 #endif
 
 #if CONFIG_SUECREEK
 #define DMIC_HW_VERSION		2
 #define DMIC_HW_CONTROLLERS	4
-#define DMIC_HW_IOCLK		19200000
 #define DMIC_HW_FIFOS		2
 #endif
 
 #if CONFIG_ICELAKE || CONFIG_TIGERLAKE
 #define DMIC_HW_VERSION		1
 #define DMIC_HW_CONTROLLERS	2
-#define DMIC_HW_IOCLK		38400000
 #define DMIC_HW_FIFOS		2
 #endif
 
@@ -73,10 +69,9 @@
 
 #include <ipc/dai-intel.h>
 #include <sof/audio/format.h>
-#include <sof/bit.h>
+#include <rtos/bit.h>
 #include <sof/lib/dai.h>
-#include <sof/lib/wait.h>
-#include <sof/schedule/task.h>
+#include <rtos/wait.h>
 #include <stdint.h>
 
 /* Parameters used in modes computation */
@@ -472,12 +467,12 @@ struct dmic_global_shared {
 /* DMIC private data */
 struct dmic_pdata {
 	struct dmic_global_shared *global;	/* Common data for all DMIC DAI instances */
-	struct task dmicwork;			/* HW gain ramp update task */
 	uint16_t enable[DMIC_HW_CONTROLLERS];	/* Mic 0 and 1 enable bits array for PDMx */
 	uint32_t state;				/* Driver component state */
-	int32_t startcount;			/* Counter in dmicwork that controls HW unmute */
+	int32_t startcount;			/* Counter that controls HW unmute */
 	int32_t gain_coef;			/* Gain update constant */
 	int32_t gain;				/* Gain value to be applied to HW */
+	int32_t unmute_ramp_time_ms;		/* Unmute ramp time in milliseconds */
 	int irq;				/* Interrupt number used */
 	enum sof_ipc_frame dai_format;		/* PCM format s32_le etc. */
 	int dai_channels;			/* Channels count */
@@ -568,10 +563,10 @@ extern const struct dai_driver dmic_driver;
 
 static inline int dmic_get_unmute_ramp_from_samplerate(int rate)
 {
-	int time_ms;
+	int32_t time_ms;
 
-	time_ms = Q_MULTSR_32X32((int32_t)rate, LOGRAMP_TIME_COEF_Q15, 0, 15, 0) +
-		LOGRAMP_TIME_OFFS_Q0;
+	time_ms = sat_int32(Q_MULTSR_32X32((int64_t)rate, LOGRAMP_TIME_COEF_Q15, 0, 15, 0) +
+		LOGRAMP_TIME_OFFS_Q0);
 	if (time_ms > LOGRAMP_TIME_MAX_MS)
 		return LOGRAMP_TIME_MAX_MS;
 

@@ -6,9 +6,9 @@
  */
 
 #include <sof/init.h>
-#include <sof/lib/alloc.h>
+#include <rtos/alloc.h>
 #include <sof/drivers/idc.h>
-#include <sof/drivers/interrupt.h>
+#include <rtos/interrupt.h>
 #include <sof/drivers/interrupt-map.h>
 #include <sof/lib/dma.h>
 #include <sof/schedule/schedule.h>
@@ -20,16 +20,20 @@
 #include <sof/audio/pipeline.h>
 #include <sof/audio/component_ext.h>
 #include <sof/trace/trace.h>
+#include <rtos/wait.h>
 
 /* Zephyr includes */
 #include <zephyr/device.h>
-#include <soc.h>
 #include <zephyr/kernel.h>
 #include <version.h>
+#include <zephyr/sys/__assert.h>
+#include <soc.h>
 
 #if !CONFIG_KERNEL_COHERENCE
 #include <zephyr/arch/xtensa/cache.h>
 #endif
+
+LOG_MODULE_REGISTER(zephyr, CONFIG_SOF_LOG_LEVEL);
 
 extern K_KERNEL_STACK_ARRAY_DEFINE(z_interrupt_stacks, CONFIG_MP_NUM_CPUS,
 				   CONFIG_ISR_STACK_SIZE);
@@ -99,9 +103,9 @@ static void *heap_alloc_aligned(struct k_heap *h, size_t min_align, size_t bytes
 	return ret;
 }
 
-static void *heap_alloc_aligned_cached(struct k_heap *h, size_t min_align, size_t bytes)
+static void __sparse_cache *heap_alloc_aligned_cached(struct k_heap *h, size_t min_align, size_t bytes)
 {
-	void *ptr;
+	void __sparse_cache *ptr;
 
 	/*
 	 * Zephyr sys_heap stores metadata at start of each
@@ -117,11 +121,11 @@ static void *heap_alloc_aligned_cached(struct k_heap *h, size_t min_align, size_
 	bytes = ALIGN_UP(bytes, min_align);
 #endif
 
-	ptr = heap_alloc_aligned(h, min_align, bytes);
+	ptr = (__sparse_force void __sparse_cache *)heap_alloc_aligned(h, min_align, bytes);
 
 #ifdef CONFIG_SOF_ZEPHYR_HEAP_CACHED
 	if (ptr)
-		ptr = z_soc_cached_ptr(ptr);
+		ptr = z_soc_cached_ptr((__sparse_force void *)ptr);
 #endif
 
 	return ptr;
@@ -134,7 +138,7 @@ static void heap_free(struct k_heap *h, void *mem)
 	void *mem_uncached;
 
 	if (is_cached(mem)) {
-		mem_uncached = z_soc_uncached_ptr(mem);
+		mem_uncached = z_soc_uncached_ptr((__sparse_force void __sparse_cache *)mem);
 		z_xtensa_cache_flush_inv(mem, sys_heap_usable_size(&h->heap, mem_uncached));
 
 		mem = mem_uncached;
@@ -168,7 +172,7 @@ void *rmalloc(enum mem_zone zone, uint32_t flags, uint32_t caps, size_t bytes)
 	void *ptr;
 
 	if (zone_is_cached(zone) && !(flags & SOF_MEM_FLAG_COHERENT)) {
-		ptr = heap_alloc_aligned_cached(&sof_heap, 0, bytes);
+		ptr = (__sparse_force void *)heap_alloc_aligned_cached(&sof_heap, 0, bytes);
 	} else {
 		/*
 		 * XTOS alloc implementation has used dcache alignment,
@@ -243,7 +247,10 @@ void *rzalloc(enum mem_zone zone, uint32_t flags, uint32_t caps, size_t bytes)
 void *rballoc_align(uint32_t flags, uint32_t caps, size_t bytes,
 		    uint32_t alignment)
 {
-	return heap_alloc_aligned_cached(&sof_heap, alignment, bytes);
+	if (flags & SOF_MEM_FLAG_COHERENT)
+		return heap_alloc_aligned(&sof_heap, alignment, bytes);
+
+	return (__sparse_force void *)heap_alloc_aligned_cached(&sof_heap, alignment, bytes);
 }
 
 /*
@@ -257,10 +264,6 @@ void rfree(void *ptr)
 	heap_free(&sof_heap, ptr);
 }
 
-/* debug only - only needed for linking */
-void heap_trace_all(int force)
-{
-}
 
 /*
  * Interrupts.
@@ -272,6 +275,8 @@ void heap_trace_all(int force)
 const char irq_name_level2[] = "level2";
 const char irq_name_level5[] = "level5";
 
+/* imx currently has no IRQ driver in Zephyr so we force to xtos IRQ */
+#if defined(CONFIG_IMX)
 int interrupt_register(uint32_t irq, void(*handler)(void *arg), void *arg)
 {
 #ifdef CONFIG_DYNAMIC_INTERRUPTS
@@ -284,7 +289,6 @@ int interrupt_register(uint32_t irq, void(*handler)(void *arg), void *arg)
 #endif
 }
 
-#if !CONFIG_LIBRARY
 /* unregister an IRQ handler - matches on IRQ number and data ptr */
 void interrupt_unregister(uint32_t irq, const void *arg)
 {
@@ -318,24 +322,6 @@ uint32_t interrupt_disable(uint32_t irq, void *arg)
  * i.MX uses the IRQ_STEER
  */
 #if !CONFIG_IMX
-/*
- * CAVS IRQs are multilevel whereas BYT and BDW are DSP level only.
- */
-int interrupt_get_irq(unsigned int irq, const char *cascade)
-{
-#if CONFIG_SOC_SERIES_INTEL_ADSP_BAYTRAIL ||\
-	CONFIG_SOC_SERIES_INTEL_ADSP_BROADWELL || \
-	CONFIG_LIBRARY
-	return irq;
-#else
-	if (cascade == irq_name_level2)
-		return SOC_AGGREGATE_IRQ(irq, IRQ_NUM_EXT_LEVEL2);
-	if (cascade == irq_name_level5)
-		return SOC_AGGREGATE_IRQ(irq, IRQ_NUM_EXT_LEVEL5);
-
-	return SOC_AGGREGATE_IRQ(0, irq);
-#endif
-}
 
 void interrupt_mask(uint32_t irq, unsigned int cpu)
 {
@@ -345,11 +331,6 @@ void interrupt_mask(uint32_t irq, unsigned int cpu)
 void interrupt_unmask(uint32_t irq, unsigned int cpu)
 {
 	/* TODO: how do we unmask on other cores with Zephyr APIs */
-}
-
-void platform_interrupt_init(void)
-{
-	/* handled by zephyr - needed for linkage */
 }
 
 void platform_interrupt_set(uint32_t irq)
@@ -396,15 +377,6 @@ unsigned int _xtos_ints_off(unsigned int mask)
 	return 0;
 }
 
-void ipc_send_queued_msg(void);
-
-static void ipc_send_queued_callback(void *private_data, enum notify_id event_type,
-				     void *caller_data)
-{
-	if (!ipc_get()->pm_prepare_D3)
-		ipc_send_queued_msg();
-}
-
 /*
  * Audio components.
  *
@@ -434,13 +406,16 @@ static void sys_module_init(void)
  * constructors directly atm.
  */
 
-void sys_comp_volume_init(void);
 void sys_comp_host_init(void);
 void sys_comp_mixer_init(void);
 void sys_comp_dai_init(void);
 void sys_comp_src_init(void);
 void sys_comp_mux_init(void);
+#if CONFIG_IPC_MAJOR_3
 void sys_comp_selector_init(void);
+#else
+void sys_comp_module_selector_interface_init(void);
+#endif
 void sys_comp_switch_init(void);
 void sys_comp_tone_init(void);
 void sys_comp_eq_fir_init(void);
@@ -452,10 +427,30 @@ void sys_comp_kpb_init(void);
 void sys_comp_smart_amp_init(void);
 void sys_comp_basefw_init(void);
 void sys_comp_copier_init(void);
-void sys_comp_codec_cadence_interface_init(void);
-void sys_comp_codec_passthrough_interface_init(void);
-void sys_comp_gain_init(void);
+void sys_comp_module_cadence_interface_init(void);
+void sys_comp_module_passthrough_interface_init(void);
+#if CONFIG_COMP_LEGACY_INTERFACE
+void sys_comp_volume_init(void);
+#else
+void sys_comp_module_volume_interface_init(void);
+#endif
+void sys_comp_module_gain_interface_init(void);
 void sys_comp_mixin_init(void);
+void sys_comp_aria_init(void);
+void sys_comp_crossover_init(void);
+void sys_comp_drc_init(void);
+void sys_comp_multiband_drc_init(void);
+void sys_comp_google_rtc_audio_processing_init(void);
+void sys_comp_igo_nr_init(void);
+void sys_comp_rtnr_init(void);
+void sys_comp_up_down_mixer_init(void);
+void sys_comp_tdfb_init(void);
+void sys_comp_ghd_init(void);
+void sys_comp_module_dts_interface_init(void);
+void sys_comp_module_waves_interface_init(void);
+#if CONFIG_IPC_MAJOR_4
+void sys_comp_probe_init(void);
+#endif
 
 /* Zephyr redefines log_message() and mtrace_printf() which leaves
  * totally empty the .static_log_entries ELF sections for the
@@ -476,6 +471,8 @@ static inline const void *smex_placeholder_f(void)
  */
 const void *_smex_placeholder;
 
+static int w_core_enable_mask;
+
 int task_main_start(struct sof *sof)
 {
 	_smex_placeholder = smex_placeholder_f();
@@ -492,10 +489,14 @@ int task_main_start(struct sof *sof)
 	sys_comp_host_init();
 
 	if (IS_ENABLED(CONFIG_COMP_VOLUME)) {
+#if CONFIG_COMP_LEGACY_INTERFACE
 		sys_comp_volume_init();
+#else
+		sys_comp_module_volume_interface_init();
+#endif
 
 		if (IS_ENABLED(CONFIG_IPC_MAJOR_4))
-			sys_comp_gain_init();
+			sys_comp_module_gain_interface_init();
 	}
 
 	if (IS_ENABLED(CONFIG_COMP_MIXER)) {
@@ -505,74 +506,100 @@ int task_main_start(struct sof *sof)
 			sys_comp_mixin_init();
 	}
 
-	if (IS_ENABLED(CONFIG_COMP_DAI)) {
+	if (IS_ENABLED(CONFIG_COMP_DAI))
 		sys_comp_dai_init();
-	}
 
-	if (IS_ENABLED(CONFIG_COMP_SRC)) {
+	if (IS_ENABLED(CONFIG_COMP_SRC))
 		sys_comp_src_init();
-	}
 
-	if (IS_ENABLED(CONFIG_COMP_SEL)) {
+	if (IS_ENABLED(CONFIG_COMP_SEL))
+#if CONFIG_IPC_MAJOR_3
 		sys_comp_selector_init();
-	}
-
-	if (IS_ENABLED(CONFIG_COMP_SWITCH)) {
+#else
+		sys_comp_module_selector_interface_init();
+#endif
+	if (IS_ENABLED(CONFIG_COMP_SWITCH))
 		sys_comp_switch_init();
-	}
 
-	if (IS_ENABLED(CONFIG_COMP_TONE)) {
+	if (IS_ENABLED(CONFIG_COMP_TONE))
 		sys_comp_tone_init();
-	}
 
-	if (IS_ENABLED(CONFIG_COMP_FIR)) {
+	if (IS_ENABLED(CONFIG_COMP_FIR))
 		sys_comp_eq_fir_init();
-	}
 
-	if (IS_ENABLED(CONFIG_COMP_IIR)) {
+	if (IS_ENABLED(CONFIG_COMP_IIR))
 		sys_comp_eq_iir_init();
-	}
 
-	if (IS_ENABLED(CONFIG_SAMPLE_KEYPHRASE)) {
+	if (IS_ENABLED(CONFIG_SAMPLE_KEYPHRASE))
 		sys_comp_keyword_init();
-	}
 
-	if (IS_ENABLED(CONFIG_COMP_KPB)) {
+	if (IS_ENABLED(CONFIG_COMP_KPB))
 		sys_comp_kpb_init();
-	}
 
-	if (IS_ENABLED(CONFIG_SAMPLE_SMART_AMP)) {
+	if (IS_ENABLED(CONFIG_SAMPLE_SMART_AMP) ||
+	    IS_ENABLED(CONFIG_MAXIM_DSM))
 		sys_comp_smart_amp_init();
-	}
 
-	if (IS_ENABLED(CONFIG_COMP_ASRC)) {
+	if (IS_ENABLED(CONFIG_COMP_ASRC))
 		sys_comp_asrc_init();
-	}
 
-	if (IS_ENABLED(CONFIG_COMP_DCBLOCK)) {
+	if (IS_ENABLED(CONFIG_COMP_DCBLOCK))
 		sys_comp_dcblock_init();
-	}
 
-	if (IS_ENABLED(CONFIG_COMP_MUX)) {
+	if (IS_ENABLED(CONFIG_COMP_MUX))
 		sys_comp_mux_init();
-	}
 
-	if (IS_ENABLED(CONFIG_COMP_BASEFW_IPC4)) {
+	if (IS_ENABLED(CONFIG_COMP_BASEFW_IPC4))
 		sys_comp_basefw_init();
-	}
 
-	if (IS_ENABLED(CONFIG_COMP_COPIER)) {
+	if (IS_ENABLED(CONFIG_COMP_COPIER))
 		sys_comp_copier_init();
-	}
 
-	if (IS_ENABLED(CONFIG_CADENCE_CODEC)) {
-		sys_comp_codec_cadence_interface_init();
-	}
+	if (IS_ENABLED(CONFIG_CADENCE_CODEC))
+		sys_comp_module_cadence_interface_init();
 
-	if (IS_ENABLED(CONFIG_PASSTHROUGH_CODEC)) {
-		sys_comp_codec_passthrough_interface_init();
-	}
+	if (IS_ENABLED(CONFIG_PASSTHROUGH_CODEC))
+		sys_comp_module_passthrough_interface_init();
 
+	if (IS_ENABLED(CONFIG_COMP_ARIA))
+		sys_comp_aria_init();
+
+	if (IS_ENABLED(CONFIG_COMP_CROSSOVER))
+		sys_comp_crossover_init();
+
+	if (IS_ENABLED(CONFIG_COMP_DRC))
+		sys_comp_drc_init();
+
+	if (IS_ENABLED(CONFIG_COMP_MULTIBAND_DRC))
+		sys_comp_multiband_drc_init();
+
+	if (IS_ENABLED(CONFIG_COMP_GOOGLE_RTC_AUDIO_PROCESSING))
+		sys_comp_google_rtc_audio_processing_init();
+
+	if (IS_ENABLED(CONFIG_COMP_IGO_NR))
+		sys_comp_igo_nr_init();
+
+	if (IS_ENABLED(CONFIG_COMP_RTNR))
+		sys_comp_rtnr_init();
+
+	if (IS_ENABLED(CONFIG_COMP_UP_DOWN_MIXER))
+		sys_comp_up_down_mixer_init();
+
+	if (IS_ENABLED(CONFIG_COMP_TDFB))
+		sys_comp_tdfb_init();
+
+	if (IS_ENABLED(CONFIG_COMP_GOOGLE_HOTWORD_DETECT))
+		sys_comp_ghd_init();
+
+	if (IS_ENABLED(CONFIG_DTS_CODEC))
+		sys_comp_module_dts_interface_init();
+
+	if (IS_ENABLED(CONFIG_WAVES_CODEC))
+		sys_comp_module_waves_interface_init();
+#if CONFIG_IPC_MAJOR_4
+	if (IS_ENABLED(CONFIG_PROBE))
+		sys_comp_probe_init();
+#endif
 	/* init pipeline position offsets */
 	pipeline_posn_init(sof);
 
@@ -582,10 +609,12 @@ int task_main_start(struct sof *sof)
 #define SOF_IPC_QUEUED_DOMAIN SOF_SCHEDULE_LL_TIMER
 #endif
 
-	/* Temporary fix for issue #4356 */
-	(void)notifier_register(NULL, scheduler_get_data(SOF_IPC_QUEUED_DOMAIN),
-				NOTIFIER_ID_LL_POST_RUN,
-				ipc_send_queued_callback, 0);
+	/*
+	 * called from primary_core_init(), track state here
+	 * (only called from single core, no RMW lock)
+	 */
+	__ASSERT_NO_MSG(cpu_get_id() == PLATFORM_PRIMARY_CORE_ID);
+	w_core_enable_mask |= BIT(PLATFORM_PRIMARY_CORE_ID);
 
 	/* let host know DSP boot is complete */
 	ret = platform_boot_complete(0);
@@ -677,6 +706,11 @@ int arch_cpu_enable_core(int id)
 {
 	pm_runtime_get(PM_RUNTIME_DSP, PWRD_BY_TPLG | id);
 
+	/* only called from single core, no RMW lock */
+	__ASSERT_NO_MSG(cpu_get_id() == PLATFORM_PRIMARY_CORE_ID);
+
+	w_core_enable_mask |= BIT(id);
+
 	return 0;
 }
 
@@ -724,11 +758,16 @@ int arch_cpu_secondary_cores_prepare_d0ix(void)
 void arch_cpu_disable_core(int id)
 {
 	/* TODO: call Zephyr API */
+
+	/* only called from single core, no RMW lock */
+	__ASSERT_NO_MSG(cpu_get_id() == PLATFORM_PRIMARY_CORE_ID);
+
+	w_core_enable_mask &= ~BIT(id);
 }
 
 int arch_cpu_is_core_enabled(int id)
 {
-	return arch_cpu_active(id);
+	return w_core_enable_mask & BIT(id);
 }
 
 void cpu_power_down_core(uint32_t flags)
@@ -738,14 +777,7 @@ void cpu_power_down_core(uint32_t flags)
 
 int arch_cpu_enabled_cores(void)
 {
-	unsigned int i;
-	int mask = 0;
-
-	for (i = 0; i < CONFIG_MP_NUM_CPUS; i++)
-		if (arch_cpu_active(i))
-			mask |= BIT(i);
-
-	return mask;
+	return w_core_enable_mask;
 }
 
 static struct idc idc[CONFIG_MP_NUM_CPUS];
@@ -760,4 +792,34 @@ struct idc **idc_get(void)
 	return p_idc + cpu;
 }
 #endif
+
+#define DEFAULT_TRY_TIMES 8
+
+int poll_for_register_delay(uint32_t reg, uint32_t mask,
+			    uint32_t val, uint64_t us)
+{
+	uint64_t tick = k_us_to_cyc_ceil64(us);
+	uint32_t tries = DEFAULT_TRY_TIMES;
+	uint64_t delta = tick / tries;
+
+	if (!delta) {
+		/*
+		 * If we want to wait for less than DEFAULT_TRY_TIMES ticks then
+		 * delta has to be set to 1 and number of tries to that of number
+		 * of ticks.
+		 */
+		delta = 1;
+		tries = tick;
+	}
+
+	while ((io_reg_read(reg) & mask) != val) {
+		if (!tries--) {
+			LOG_DBG("poll timeout reg %u mask %u val %u us %u",
+			       reg, mask, val, (uint32_t)us);
+			return -EIO;
+		}
+		wait_delay(delta);
+	}
+	return 0;
+}
 

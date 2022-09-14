@@ -12,6 +12,19 @@
 
 #include <ipc/probe.h>
 
+/**
+ * A buffer of logging data is available for processing.
+ */
+typedef void(*probe_logging_hook_t)(uint8_t *buffer, size_t length);
+
+/**
+ * @brief Initialize the probe logging backend.
+ *
+ * @param hook Function is called when new logging data is written
+ *             out by the logger.
+ */
+void probe_logging_init(probe_logging_hook_t hook);
+
 /*
  * \brief Initialize probes subsystem
  *

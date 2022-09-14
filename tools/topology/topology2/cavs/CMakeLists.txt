@@ -8,26 +8,41 @@ set(TPLGS
 "cavs-passthrough-hdmi\;cavs-mixin-mixout-hda\;HDA_CONFIG=mix"
 # If the alsatplg plugins for NHLT are not available, the NHLT blobs will not be added to the
 # topologies below.
-# TGL: CAVS HDA topology with mixer-based pipelines for HDA and passthrough pipelines for HDMI
-"cavs-passthrough-hdmi\;cavs-mixin-mixout-hda-2ch-tgl\;\
-HDA_CONFIG=mix,NUM_DMICS=2,PREPROCESS_PLUGINS=nhlt,NHLT_BIN=nhlt.bin"
 # CNL: CAVS HDA topology with mixer-based pipelines for HDA and passthrough pipelines for HDMI
 "cavs-passthrough-hdmi\;cavs-mixin-mixout-hda-2ch-cnl\;\
 HDA_CONFIG=mix,NUM_DMICS=2,PLATFORM=cnl,PREPROCESS_PLUGINS=nhlt,NHLT_BIN=nhlt.bin"
-# TGL: CAVS HDA topology with mixer-based pipelines for HDA and passthrough pipelines for HDMI
-"cavs-passthrough-hdmi\;cavs-mixin-mixout-hda-4ch-tgl\;\
-HDA_CONFIG=mix,NUM_DMICS=4,PLATFORM=cnl,PDM1_MIC_A_ENABLE=1,PDM1_MIC_B_ENABLE=1,\
-PREPROCESS_PLUGINS=nhlt,NHLT_BIN=nhlt.bin"
-# CNL: CAVS HDA topology with mixer-based pipelines for HDA and passthrough pipelines for HDMI
 "cavs-passthrough-hdmi\;cavs-mixin-mixout-hda-4ch-cnl\;\
 HDA_CONFIG=mix,NUM_DMICS=4,PLATFORM=cnl,PDM1_MIC_A_ENABLE=1,PDM1_MIC_B_ENABLE=1,\
 PREPROCESS_PLUGINS=nhlt,NHLT_BIN=nhlt.bin"
+# TGL: CAVS HDA topology with mixer-based pipelines for HDA and passthrough pipelines for HDMI
+"cavs-passthrough-hdmi\;cavs-mixin-mixout-hda-2ch-tgl\;\
+HDA_CONFIG=mix,NUM_DMICS=2,PREPROCESS_PLUGINS=nhlt,NHLT_BIN=nhlt.bin"
+"cavs-passthrough-hdmi\;cavs-mixin-mixout-hda-4ch-tgl\;\
+HDA_CONFIG=mix,NUM_DMICS=4,PLATFORM=cnl,PDM1_MIC_A_ENABLE=1,PDM1_MIC_B_ENABLE=1,\
+PREPROCESS_PLUGINS=nhlt,NHLT_BIN=nhlt.bin"
+# MTL: CAVS HDA topology with mixer-based pipelines for HDA and passthrough pipelines for HDMI
+"cavs-passthrough-hdmi\;cavs-mixin-mixout-hda-4ch-mtl\;PLATFORM=mtl,\
+HDA_CONFIG=mix,NUM_DMICS=4,PDM1_MIC_A_ENABLE=1,PDM1_MIC_B_ENABLE=1,PREPROCESS_PLUGINS=nhlt,NHLT_BIN=nhlt-mtl-hda-mix.bin"
 
 # CAVS SDW topology with passthrough pipelines
 "cavs-sdw\;cavs-sdw"
+
+# CAVS SDW with SRC gain and mixer support
+"cavs-sdw-src-gain-mixin\;cavs-sdw-src-gain-mixin"
+
+# SDW + HDMI topology with passthrough pipelines
+"cavs-sdw\;cavs-sdw-hdmi\;NUM_HDMIS=4"
+
+# SDW + DMIC topology with passthrough pipelines
+"cavs-sdw\;cavs-mtl-sdw-dmic\;NUM_DMICS=4,DMIC0_ID=2,DMIC1_ID=3,\
+PREPROCESS_PLUGINS=nhlt,NHLT_BIN=nhlt-mtl-sdw-dmic.bin"
+
 # CAVS SSP topology for TGL
 "cavs-nocodec\;cavs-tgl-nocodec\;NUM_DMICS=4,PDM1_MIC_A_ENABLE=1,PDM1_MIC_B_ENABLE=1,\
 PREPROCESS_PLUGINS=nhlt,NHLT_BIN=nhlt-cavs-tgl-nocodec.bin"
+# SSP topology for MTL
+"cavs-nocodec\;sof-mtl-nocodec\;PLATFORM=mtl,NUM_DMICS=2,\
+PREPROCESS_PLUGINS=nhlt,NHLT_BIN=nhlt-ace-mtl-nocodec.bin"
 )
 
 # generate ABI for IPC4
@@ -36,7 +51,6 @@ execute_process(
 	OUTPUT_FILE ${CMAKE_CURRENT_BINARY_DIR}/abi.conf
 )
 
-# This will override the topology1 binaries with topology2 binaries
 add_custom_target(topology2_cavs)
 add_dependencies(topologies2 topology2_cavs)
 

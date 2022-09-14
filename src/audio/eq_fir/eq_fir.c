@@ -15,13 +15,13 @@
 #include <sof/common.h>
 #include <sof/debug/panic.h>
 #include <sof/ipc/msg.h>
-#include <sof/lib/alloc.h>
+#include <rtos/alloc.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/uuid.h>
 #include <sof/list.h>
 #include <sof/math/fir_config.h>
 #include <sof/platform.h>
-#include <sof/string.h>
+#include <rtos/string.h>
 #include <sof/ut.h>
 #include <sof/trace/trace.h>
 #include <ipc/control.h>
@@ -37,6 +37,8 @@
 
 static const struct comp_driver comp_eq_fir;
 
+LOG_MODULE_REGISTER(eq_fir, CONFIG_SOF_LOG_LEVEL);
+
 /* 43a90ce7-f3a5-41df-ac06-ba98651ae6a3 */
 DECLARE_SOF_RT_UUID("eq-fir", eq_fir_uuid, 0x43a90ce7, 0xf3a5, 0x41df,
 		 0xac, 0x06, 0xba, 0x98, 0x65, 0x1a, 0xe6, 0xa3);
@@ -51,8 +53,8 @@ struct comp_data {
 	int32_t *fir_delay;			/**< pointer to allocated RAM */
 	size_t fir_delay_size;			/**< allocated size */
 	void (*eq_fir_func)(struct fir_state_32x16 fir[],
-			    const struct audio_stream *source,
-			    struct audio_stream *sink,
+			    const struct audio_stream __sparse_cache *source,
+			    struct audio_stream __sparse_cache *sink,
 			    int frames, int nch);
 };
 
@@ -103,15 +105,11 @@ static inline void set_s32_fir(struct comp_data *cd)
 #endif /* CONFIG_FORMAT_S32LE */
 #endif
 
-static inline int set_fir_func(struct comp_dev *dev)
+static inline int set_fir_func(struct comp_dev *dev, enum sof_ipc_frame fmt)
 {
 	struct comp_data *cd = comp_get_drvdata(dev);
-	struct comp_buffer *sourceb;
 
-	sourceb = list_first_item(&dev->bsource_list, struct comp_buffer,
-				  sink_list);
-
-	switch (sourceb->stream.frame_fmt) {
+	switch (fmt) {
 #if CONFIG_FORMAT_S16LE
 	case SOF_IPC_FRAME_S16_LE:
 		comp_info(dev, "set_fir_func(), SOF_IPC_FRAME_S16_LE");
@@ -142,8 +140,8 @@ static inline int set_fir_func(struct comp_dev *dev)
  */
 
 static void eq_fir_passthrough(struct fir_state_32x16 fir[],
-			       const struct audio_stream *source,
-			       struct audio_stream *sink,
+			       const struct audio_stream __sparse_cache *source,
+			       struct audio_stream __sparse_cache *sink,
 			       int frames, int nch)
 {
 	audio_stream_copy(source, 0, sink, 0, frames * nch);
@@ -463,14 +461,16 @@ static int eq_fir_trigger(struct comp_dev *dev, int cmd)
 
 	comp_info(dev, "eq_fir_trigger()");
 
-	if (cmd == COMP_TRIGGER_START || cmd == COMP_TRIGGER_RELEASE)
-		assert(cd->eq_fir_func);
+	if ((cmd == COMP_TRIGGER_START || cmd == COMP_TRIGGER_RELEASE) && !cd->eq_fir_func) {
+		comp_cl_err(&comp_eq_fir, "eq_fir_func is not set");
+		return -EINVAL;
+	}
 
 	return comp_set_state(dev, cmd);
 }
 
-static void eq_fir_process(struct comp_dev *dev, struct comp_buffer *source,
-			   struct comp_buffer *sink, int frames,
+static void eq_fir_process(struct comp_dev *dev, struct comp_buffer __sparse_cache *source,
+			   struct comp_buffer __sparse_cache *sink, int frames,
 			   uint32_t source_bytes, uint32_t sink_bytes)
 {
 	struct comp_data *cd = comp_get_drvdata(dev);
@@ -491,8 +491,8 @@ static void eq_fir_process(struct comp_dev *dev, struct comp_buffer *source,
 static int eq_fir_copy(struct comp_dev *dev)
 {
 	struct comp_copy_limits cl;
-	struct comp_buffer *sourceb;
-	struct comp_buffer *sinkb;
+	struct comp_buffer *sourceb, *sinkb;
+	struct comp_buffer __sparse_cache *source_c, *sink_c;
 	struct comp_data *cd = comp_get_drvdata(dev);
 	int ret;
 	int n;
@@ -501,22 +501,26 @@ static int eq_fir_copy(struct comp_dev *dev)
 
 	sourceb = list_first_item(&dev->bsource_list, struct comp_buffer,
 				  sink_list);
+	source_c = buffer_acquire(sourceb);
 
 	/* Check for changed configuration */
 	if (comp_is_new_data_blob_available(cd->model_handler)) {
 		cd->config = comp_get_data_blob(cd->model_handler, NULL, NULL);
-		ret = eq_fir_setup(cd, sourceb->stream.channels);
+		ret = eq_fir_setup(cd, source_c->stream.channels);
 		if (ret < 0) {
 			comp_err(dev, "eq_fir_copy(), failed FIR setup");
+			buffer_release(source_c);
+
 			return ret;
 		}
 	}
 
 	sinkb = list_first_item(&dev->bsink_list, struct comp_buffer,
 				source_list);
+	sink_c = buffer_acquire(sinkb);
 
 	/* Get source, sink, number of frames etc. to process. */
-	comp_get_copy_limits_with_lock(sourceb, sinkb, &cl);
+	comp_get_copy_limits(source_c, sink_c, &cl);
 
 	/*
 	 * Process only even number of frames with the FIR function. The
@@ -530,10 +534,13 @@ static int eq_fir_copy(struct comp_dev *dev)
 		n = (cl.frames >> 1) << 1;
 
 		/* Run EQ function */
-		eq_fir_process(dev, sourceb, sinkb, n,
+		eq_fir_process(dev, source_c, sink_c, n,
 			       n * cl.source_frame_bytes,
 			       n * cl.sink_frame_bytes);
 	}
+
+	buffer_release(source_c);
+	buffer_release(sink_c);
 
 	return 0;
 }
@@ -541,8 +548,8 @@ static int eq_fir_copy(struct comp_dev *dev)
 static int eq_fir_prepare(struct comp_dev *dev)
 {
 	struct comp_data *cd = comp_get_drvdata(dev);
-	struct comp_buffer *sourceb;
-	struct comp_buffer *sinkb;
+	struct comp_buffer *sourceb, *sinkb;
+	struct comp_buffer __sparse_cache *source_c, *sink_c;
 	uint32_t sink_period_bytes;
 	int ret;
 
@@ -561,35 +568,38 @@ static int eq_fir_prepare(struct comp_dev *dev)
 	sinkb = list_first_item(&dev->bsink_list,
 				struct comp_buffer, source_list);
 
-	sink_period_bytes = audio_stream_period_bytes(&sinkb->stream,
+	source_c = buffer_acquire(sourceb);
+	sink_c = buffer_acquire(sinkb);
+
+	sink_period_bytes = audio_stream_period_bytes(&sink_c->stream,
 						      dev->frames);
 
-	if (sinkb->stream.size < sink_period_bytes) {
+	if (sink_c->stream.size < sink_period_bytes) {
 		comp_err(dev, "eq_fir_prepare(): sink buffer size %d is insufficient < %d",
-			 sinkb->stream.size, sink_period_bytes);
+			 sink_c->stream.size, sink_period_bytes);
 		ret = -ENOMEM;
-		goto err;
+		goto out;
 	}
 
 	cd->config = comp_get_data_blob(cd->model_handler, NULL, NULL);
 
 	if (cd->config) {
-		ret = eq_fir_setup(cd, sourceb->stream.channels);
-		if (ret < 0) {
+		ret = eq_fir_setup(cd, source_c->stream.channels);
+		if (ret < 0)
 			comp_err(dev, "eq_fir_prepare(): eq_fir_setup failed.");
-			goto err;
-		}
-
-		ret = set_fir_func(dev);
-		return ret;
+		else
+			ret = set_fir_func(dev, source_c->stream.frame_fmt);
+	} else {
+		cd->eq_fir_func = eq_fir_passthrough;
 	}
 
-	cd->eq_fir_func = eq_fir_passthrough;
+out:
+	if (ret < 0)
+		comp_set_state(dev, COMP_TRIGGER_RESET);
 
-	return ret;
+	buffer_release(sink_c);
+	buffer_release(source_c);
 
-err:
-	comp_set_state(dev, COMP_TRIGGER_RESET);
 	return ret;
 }
 

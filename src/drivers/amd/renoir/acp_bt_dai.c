@@ -8,8 +8,8 @@
 
 #include <sof/audio/component.h>
 #include <sof/drivers/acp_dai_dma.h>
-#include <sof/drivers/interrupt.h>
-#include <sof/lib/alloc.h>
+#include <rtos/interrupt.h>
+#include <rtos/alloc.h>
 #include <sof/lib/dai.h>
 #include <sof/lib/dma.h>
 #include <sof/lib/uuid.h>
@@ -39,6 +39,12 @@ static int btdai_trigger(struct dai *dai, int cmd, int direction)
 }
 
 static int btdai_probe(struct dai *dai)
+{
+	/* TODO */
+	return 0;
+}
+
+static int btdai_remove(struct dai *dai)
 {
 	/* TODO */
 	return 0;
@@ -82,6 +88,7 @@ const struct dai_driver acp_btdai_driver = {
 		.trigger		= btdai_trigger,
 		.set_config		= btdai_set_config,
 		.probe			= btdai_probe,
+		.remove			= btdai_remove,
 		.get_fifo		= btdai_get_fifo,
 		.get_handshake		= btdai_get_handshake,
 		.get_hw_params		= btdai_get_hw_params,

@@ -8,10 +8,10 @@
 #ifndef __SOF_DRIVERS_SSP_H__
 #define __SOF_DRIVERS_SSP_H__
 
-#include <sof/bit.h>
-#include <sof/lib/clk.h>
+#include <rtos/bit.h>
+#include <rtos/clk.h>
 #include <sof/lib/dai.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <sof/trace/trace.h>
 #include <ipc/dai.h>
 #include <ipc/dai-intel.h>
@@ -212,7 +212,7 @@ extern const struct dai_driver ssp_driver;
 
 #if CONFIG_CAVS
 
-#include <sof/lib/clk.h>
+#include <rtos/clk.h>
 
 /* max possible index in ssp_freq array */
 #define MAX_SSP_FREQ_INDEX	(NUM_SSP_FREQ - 1)
@@ -232,6 +232,7 @@ extern const struct dai_driver ssp_driver;
 #define SSP_CLK_MCLK_ACTIVE	BIT(1)
 #define SSP_CLK_BCLK_ES_REQ	BIT(2)
 #define SSP_CLK_BCLK_ACTIVE	BIT(3)
+#define SSP_CLK_MCLK_AON_REQ	BIT(4)
 
 /* SSP private data */
 struct ssp_pdata {

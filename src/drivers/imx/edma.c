@@ -7,8 +7,8 @@
 
 #include <sof/audio/component.h>
 #include <sof/drivers/edma.h>
-#include <sof/drivers/timer.h>
-#include <sof/lib/alloc.h>
+#include <rtos/timer.h>
+#include <rtos/alloc.h>
 #include <sof/lib/dma.h>
 #include <sof/lib/io.h>
 #include <sof/lib/notifier.h>
@@ -18,6 +18,8 @@
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(edma, CONFIG_SOF_LOG_LEVEL);
 
 /* 3d73a110-0930-457f-be51-34453e56287b */
 DECLARE_SOF_UUID("edma", edma_uuid, 0x3d73a110, 0x0930, 0x457f,
@@ -145,13 +147,10 @@ static int edma_start(struct dma_chan_data *channel)
 	tr_info(&edma_tr, "EDMA: start(%d)", channel->index);
 
 	if (channel->status != COMP_STATE_PREPARE &&
-	    channel->status != COMP_STATE_SUSPEND)
+	    channel->status != COMP_STATE_PAUSED)
 		return -EINVAL;
 
 	channel->status = COMP_STATE_ACTIVE;
-	/* Do the HW start of the DMA */
-	dma_chan_reg_update_bits(channel, EDMA_TCD_CSR,
-				 EDMA_TCD_CSR_START, EDMA_TCD_CSR_START);
 	/* Allow the HW to automatically trigger further transfers */
 	dma_chan_reg_update_bits(channel, EDMA_CH_CSR,
 				 EDMA_CH_CSR_ERQ_EARQ, EDMA_CH_CSR_ERQ_EARQ);
@@ -166,7 +165,7 @@ static int edma_release(struct dma_chan_data *channel)
 	if (channel->status != COMP_STATE_PAUSED)
 		return -EINVAL;
 
-	channel->status = COMP_STATE_ACTIVE;
+	channel->status = COMP_STATE_PREPARE;
 	return 0;
 }
 
@@ -234,7 +233,7 @@ static int edma_status(struct dma_chan_data *channel,
 	 */
 	status->r_pos = dma_chan_reg_read(channel, EDMA_TCD_SADDR);
 	status->w_pos = dma_chan_reg_read(channel, EDMA_TCD_DADDR);
-	status->timestamp = k_cycle_get_64();
+	status->timestamp = sof_cycle_get_64();
 	return 0;
 }
 

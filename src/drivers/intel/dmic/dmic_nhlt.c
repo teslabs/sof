@@ -10,6 +10,8 @@
 #include <ipc/dai-intel.h>
 #include <stdint.h>
 
+LOG_MODULE_DECLARE(dmic_dai, CONFIG_SOF_LOG_LEVEL);
+
 /* Base addresses (in PDM scope) of 2ch PDM controllers and coefficient RAM. */
 static const uint32_t base[4] = {PDM0, PDM1, PDM2, PDM3};
 static const uint32_t coef_base_a[4] = {PDM0_COEFFICIENT_A, PDM1_COEFFICIENT_A,
@@ -316,7 +318,7 @@ int dmic_set_config_nhlt(struct dai *dai, void *spec_config)
 	 * configuration
 	 */
 	bfth = OUTCONTROL0_BFTH_GET(val);
-	dai->plat_data.fifo->depth = 1 << bfth;
+	dai->plat_data.fifo[SOF_IPC_STREAM_CAPTURE].depth = 1 << bfth;
 
 	/* Get PDMx registers */
 	pdm_ctrl_mask = ((struct nhlt_pdm_ctrl_mask *)p)->pdm_ctrl_mask;
@@ -565,7 +567,7 @@ int dmic_set_config_nhlt(struct dai *dai, void *spec_config)
 		return -EINVAL;
 	}
 
-	dmic->dai_rate = DMIC_HW_IOCLK / rate_div;
+	dmic->dai_rate = CONFIG_DMIC_HW_IOCLK / rate_div;
 	dai_info(dai, "dmic_set_config_nhlt(): rate = %d, channels = %d, format = %d",
 		 dmic->dai_rate, dmic->dai_channels, dmic->dai_format);
 	return 0;

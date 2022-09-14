@@ -5,23 +5,23 @@
 // Author: Daniel Baluta <daniel.baluta@nxp.com>
 
 #include <sof/debug/panic.h>
-#include <sof/drivers/interrupt.h>
+#include <rtos/interrupt.h>
 #include <sof/ipc/driver.h>
 #include <sof/ipc/msg.h>
 #include <sof/ipc/schedule.h>
 #include <sof/drivers/mu.h>
-#include <sof/lib/alloc.h>
+#include <rtos/alloc.h>
 #include <sof/lib/dma.h>
 #include <sof/lib/mailbox.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/uuid.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <sof/list.h>
 #include <sof/platform.h>
 #include <sof/schedule/edf_schedule.h>
 #include <sof/schedule/schedule.h>
 #include <sof/schedule/task.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <ipc/header.h>
 #include <ipc/topology.h>
 #include <ipc/trace.h>
@@ -30,6 +30,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(ipc_task, CONFIG_SOF_LOG_LEVEL);
 
 /* 389c9186-5a7d-4ad1-a02c-a02ecdadfb33 */
 DECLARE_SOF_UUID("ipc-task", ipc_task_uuid, 0x389c9186, 0x5a7d, 0x4ad1,
@@ -80,19 +82,19 @@ static void irq_handler(void *arg)
 	}
 }
 
-int ipc_platform_compact_write_msg(ipc_cmd_hdr *hdr, int words)
+int ipc_platform_compact_write_msg(struct ipc_cmd_hdr *hdr, int words)
 {
 	return 0; /* number of words read - not currently used on this platform */
 }
 
-int ipc_platform_compact_read_msg(ipc_cmd_hdr *hdr, int words)
+int ipc_platform_compact_read_msg(struct ipc_cmd_hdr *hdr, int words)
 {
 	return 0; /* number of words read - not currently used on this platform */
 }
 
 enum task_state ipc_platform_do_cmd(struct ipc *ipc)
 {
-	ipc_cmd_hdr *hdr;
+	struct ipc_cmd_hdr *hdr;
 	/* Use struct ipc_data *iipc = ipc_get_drvdata(ipc); if needed */
 
 	/* perform command */

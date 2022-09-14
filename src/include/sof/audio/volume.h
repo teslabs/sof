@@ -18,7 +18,8 @@
 
 #include <sof/audio/component.h>
 #include <sof/audio/ipc-config.h>
-#include <sof/bit.h>
+#include <sof/audio/module_adapter/module/generic.h>
+#include <rtos/bit.h>
 #include <sof/common.h>
 #include <sof/trace/trace.h>
 #include <ipc/stream.h>
@@ -105,24 +106,26 @@ struct sof_ipc_ctrl_value_chan;
 #define VOL_BYTES_TO_S16_SAMPLES(b)	((b) >> 1)
 #define VOL_BYTES_TO_S32_SAMPLES(b)	((b) >> 2)
 
+#define VOL_S16_SAMPLES_TO_BYTES(s)	((s) << 1)
+#define VOL_S32_SAMPLES_TO_BYTES(s)	((s) << 2)
+
 /**
  * \brief volume processing function interface
  */
-typedef void (*vol_scale_func)(struct comp_dev *dev, struct audio_stream *sink,
-			       const struct audio_stream *source,
-			       uint32_t frames);
+typedef void (*vol_scale_func)(struct processing_module *mod, struct input_stream_buffer *source,
+			       struct output_stream_buffer *sink, uint32_t frames);
 
 /**
  * \brief volume interface for function getting nearest zero crossing frame
  */
-typedef uint32_t (*vol_zc_func)(const struct audio_stream *source,
+typedef uint32_t (*vol_zc_func)(const struct audio_stream __sparse_cache *source,
 				uint32_t frames, int64_t *prev_sum);
 
 /**
  * \brief Function for volume ramp shape function
  */
 
-typedef int32_t (*vol_ramp_func)(struct comp_dev *dev, int32_t ramp_time, int channel);
+typedef int32_t (*vol_ramp_func)(struct processing_module *mod, int32_t ramp_time, int channel);
 
 struct vol_data {
 #if CONFIG_IPC_MAJOR_4
@@ -164,10 +167,10 @@ struct comp_func_map {
 };
 
 /** \brief Map of formats with dedicated processing functions. */
-extern const struct comp_func_map func_map[];
+extern const struct comp_func_map volume_func_map[];
 
 /** \brief Number of processing functions. */
-extern const size_t func_count;
+extern const size_t volume_func_count;
 
 /** \brief Volume zero crossing functions map. */
 struct comp_zc_func_map {
@@ -179,21 +182,19 @@ struct comp_zc_func_map {
 /**
  * \brief Retrievies volume processing function.
  * \param[in,out] dev Volume base component device.
+ * \param[in] sinkb Sink buffer to match against
  */
-static inline vol_scale_func vol_get_processing_function(struct comp_dev *dev)
+static inline vol_scale_func vol_get_processing_function(struct comp_dev *dev,
+							 struct comp_buffer __sparse_cache *sinkb)
 {
-	struct comp_buffer *sinkb;
 	int i;
 
-	sinkb = list_first_item(&dev->bsink_list, struct comp_buffer,
-				source_list);
-
 	/* map the volume function for source and sink buffers */
-	for (i = 0; i < func_count; i++) {
-		if (sinkb->stream.frame_fmt != func_map[i].frame_fmt)
+	for (i = 0; i < volume_func_count; i++) {
+		if (sinkb->stream.frame_fmt != volume_func_map[i].frame_fmt)
 			continue;
 
-		return func_map[i].func;
+		return volume_func_map[i].func;
 	}
 
 	return NULL;
@@ -202,16 +203,19 @@ static inline vol_scale_func vol_get_processing_function(struct comp_dev *dev)
 /**
  * \brief Retrievies volume processing function.
  * \param[in,out] dev Volume base component device.
+ * \param[in] sinkb Sink buffer to match against
  */
-static inline vol_scale_func vol_get_processing_function(struct comp_dev *dev)
+static inline vol_scale_func vol_get_processing_function(struct comp_dev *dev,
+							 struct comp_buffer __sparse_cache *sinkb)
 {
-	struct vol_data *cd = comp_get_drvdata(dev);
+	struct processing_module *mod = comp_get_drvdata(dev);
+	struct vol_data *cd = module_get_private_data(mod);
 
 	switch (cd->base.audio_fmt.depth) {
 	case IPC4_DEPTH_16BIT:
-		return func_map[0].func;
+		return volume_func_map[0].func;
 	case IPC4_DEPTH_32BIT:
-		return func_map[2].func;
+		return volume_func_map[2].func;
 	default:
 		comp_err(dev, "vol_get_processing_function(): unsupported depth %d",
 			 cd->base.audio_fmt.depth);
@@ -229,7 +233,11 @@ static inline void peak_vol_update(struct vol_data *cd)
 }
 
 #ifdef UNIT_TEST
+#if CONFIG_COMP_LEGACY_INTERFACE
 void sys_comp_volume_init(void);
+#else
+void sys_comp_module_volume_interface_init(void);
+#endif
 #endif
 
 #endif /* __SOF_AUDIO_VOLUME_H__ */

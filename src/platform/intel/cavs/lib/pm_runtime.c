@@ -15,17 +15,17 @@
 #include <cavs/lib/pm_memory.h>
 #include <cavs/version.h>
 #include <sof/debug/panic.h>
-#include <sof/drivers/interrupt.h>
-#include <sof/lib/alloc.h>
+#include <rtos/interrupt.h>
+#include <rtos/alloc.h>
 #include <sof/lib/dai.h>
 #include <sof/lib/io.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/pm_runtime.h>
 #include <sof/lib/shim.h>
 #include <sof/lib/uuid.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <sof/platform.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <sof/trace/trace.h>
 #include <ipc/topology.h>
 #include <user/trace.h>
@@ -39,6 +39,8 @@
 #if !CONFIG_SUECREEK
 #include <cavs/lib/power_down.h>
 #endif
+
+LOG_MODULE_REGISTER(power, CONFIG_SOF_LOG_LEVEL);
 
 /* 76cc9773-440c-4df9-95a8-72defe7796fc */
 DECLARE_SOF_UUID("power", power_uuid, 0x76cc9773, 0x440c, 0x4df9,

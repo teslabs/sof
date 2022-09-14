@@ -10,21 +10,21 @@
 #include <sof/ipc/driver.h>
 #include <sof/ipc/schedule.h>
 #include <sof/drivers/spi.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/cache.h>
-#include <sof/lib/clk.h>
+#include <rtos/alloc.h>
+#include <rtos/cache.h>
+#include <rtos/clk.h>
 #include <sof/lib/dma.h>
 #include <sof/lib/io.h>
 #include <sof/lib/mailbox.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/uuid.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <sof/platform.h>
 #include <sof/schedule/ll_schedule.h>
 #include <sof/schedule/schedule.h>
 #include <sof/schedule/task.h>
-#include <sof/spinlock.h>
-#include <sof/string.h>
+#include <rtos/spinlock.h>
+#include <rtos/string.h>
 #include <ipc/header.h>
 #include <ipc/topology.h>
 #include <stddef.h>
@@ -180,7 +180,7 @@ static int spi_trigger(struct spi *spi, int cmd, int direction)
 	switch (cmd) {
 	case SPI_TRIGGER_START:
 		/* trigger the SPI-Slave + DMA + INT + Receiving */
-		ret = dma_start(spi->chan[direction]);
+		ret = dma_start_legacy(spi->chan[direction]);
 		if (ret < 0)
 			return ret;
 
@@ -196,7 +196,7 @@ static int spi_trigger(struct spi *spi, int cmd, int direction)
 	case SPI_TRIGGER_STOP:
 		/* Stop the SPI-Slave */
 		spi_stop(spi);
-		dma_stop(spi->chan[direction]);
+		dma_stop_legacy(spi->chan[direction]);
 
 		break;
 	default:
@@ -280,7 +280,7 @@ static int spi_slave_dma_set_config(struct spi *spi,
 	config.elem_array.count = 1;
 	config.elem_array.elems = &local_sg_elem;
 
-	return dma_set_config(chan, &config);
+	return dma_set_config_legacy(chan, &config);
 }
 
 static int spi_set_config(struct spi *spi,
@@ -303,7 +303,8 @@ static enum task_state spi_completion_work(void *data)
 	case IPC_READ:
 		hdr = (struct sof_ipc_hdr *)spi->rx_buffer;
 
-		dcache_invalidate_region(spi->rx_buffer, SPI_BUFFER_SIZE);
+		dcache_invalidate_region((__sparse_force void __sparse_cache *)spi->rx_buffer,
+					 SPI_BUFFER_SIZE);
 		mailbox_hostbox_write(0, spi->rx_buffer, hdr->size);
 
 		ipc_schedule_process(ipc_get());
@@ -356,7 +357,7 @@ int spi_push(struct spi *spi, const void *data, size_t size)
 	ret = memcpy_s(config->src_buf, config->buffer_size, data, size);
 	assert(!ret);
 
-	dcache_writeback_region(config->src_buf, size);
+	dcache_writeback_region((__sparse_force void __sparse_cache *)config->src_buf, size);
 
 	ret = spi_trigger(spi, SPI_TRIGGER_START, SPI_DIR_TX);
 	if (ret < 0)
@@ -394,7 +395,7 @@ static int spi_slave_init(struct spi *spi)
 	if (ret < 0)
 		return ret;
 
-	dcache_invalidate_region(spi->rx_buffer, SPI_BUFFER_SIZE);
+	dcache_invalidate_region((__sparse_force void __sparse_cache *)spi->rx_buffer, SPI_BUFFER_SIZE);
 	ret = spi_trigger(spi, SPI_TRIGGER_START, SPI_DIR_RX);
 	if (ret < 0)
 		return ret;
@@ -434,11 +435,11 @@ int spi_probe(struct spi *spi)
 	if (!spi->dma[SPI_DIR_TX])
 		return -ENODEV;
 
-	spi->chan[SPI_DIR_RX] = dma_channel_get(spi->dma[SPI_DIR_RX], 0);
+	spi->chan[SPI_DIR_RX] = dma_channel_get_legacy(spi->dma[SPI_DIR_RX], 0);
 	if (!spi->chan[SPI_DIR_RX])
 		return -ENODEV;
 
-	spi->chan[SPI_DIR_TX] = dma_channel_get(spi->dma[SPI_DIR_TX], 0);
+	spi->chan[SPI_DIR_TX] = dma_channel_get_legacy(spi->dma[SPI_DIR_TX], 0);
 	if (!spi->chan[SPI_DIR_TX])
 		return -ENODEV;
 

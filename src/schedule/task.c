@@ -12,12 +12,12 @@
 #include <sof/audio/pipeline.h>
 #include <sof/debug/panic.h>
 #include <sof/ipc/msg.h>
-#include <sof/lib/alloc.h>
+#include <rtos/alloc.h>
 #include <sof/lib/agent.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/uuid.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <sof/platform.h>
 #include <sof/schedule/edf_schedule.h>
 #include <sof/schedule/schedule.h>

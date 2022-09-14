@@ -14,7 +14,7 @@
 #include <sof/list.h>
 #include <sof/schedule/task.h>
 #include <sof/sof.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <sof/audio/pipeline-trace.h>
 #include <ipc/topology.h>
 #include <user/trace.h>
@@ -27,8 +27,16 @@ struct comp_dev;
 struct ipc;
 struct ipc_msg;
 
-/* Pipeline status to stop execution of current path */
-#define PPL_STATUS_PATH_STOP	1
+/*
+ * Pipeline status to stop execution of current path, but to keep the
+ * pipeline alive, when processing COMP_TRIGGER_STOP or COMP_TRIGGER_PAUSE
+ */
+#define PPL_STATUS_PATH_STOP		1
+/*
+ * Pipeline status to stop execution of current path, and to terminate the
+ * pipeline, when processing COMP_TRIGGER_STOP or COMP_TRIGGER_PAUSE
+ */
+#define PPL_STATUS_PATH_TERMINATE	2
 
 /* Pipeline scheduled in another thread other than ipc thread */
 #define PPL_STATUS_SCHEDULED	2
@@ -83,6 +91,7 @@ struct pipeline {
 		struct comp_dev *host;
 		unsigned int delay;	/* period count */
 		bool aborted;		/* STOP or PAUSE failed, stay active */
+		bool pending;		/* trigger scheduled but not executed yet */
 	} trigger;
 };
 
@@ -90,8 +99,9 @@ struct pipeline_walk_context {
 	int (*comp_func)(struct comp_dev *cd, struct comp_buffer *buffer,
 			 struct pipeline_walk_context *ctx, int dir);
 	void *comp_data;
-	void (*buff_func)(struct comp_buffer *buffer, void *data);
+	void (*buff_func)(struct comp_buffer __sparse_cache *buffer, void *data);
 	void *buff_data;
+	struct comp_buffer *incoming;
 	/**< pipelines to be scheduled after trigger walk */
 	struct list_item pipelines;
 	/*
@@ -199,12 +209,22 @@ int pipeline_for_each_comp(struct comp_dev *current,
 			   struct pipeline_walk_context *ctx, int dir);
 
 /**
+ * \brief Walks pipeline graph to find dai component.
+ * \param[in] pipeline_id is the start pipeline id.
+ * \param[in] dir is the direction of the traversal.
+ * \return dai component.
+ */
+struct comp_dev *pipeline_get_dai_comp(uint32_t pipeline_id, int dir);
+
+#if CONFIG_IPC_MAJOR_4
+/**
  * \brief Walks pipeline graph to find dai component and latency.
  * \param[in] pipeline_id is the start pipeline id.
  * \param[out] latency to dai.
  * \return dai component.
  */
-struct comp_dev *pipeline_get_dai_comp(uint32_t pipeline_id, uint32_t *latency);
+struct comp_dev *pipeline_get_dai_comp_latency(uint32_t pipeline_id, uint32_t *latency);
+#endif
 
 /**
  * Retrieves pipeline id from pipeline.

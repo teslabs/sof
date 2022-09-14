@@ -8,14 +8,14 @@
 #include <sof/audio/buffer.h>
 #include <sof/audio/component_ext.h>
 #include <sof/audio/pipeline.h>
-#include <sof/drivers/interrupt.h>
+#include <rtos/interrupt.h>
 #include <sof/lib/agent.h>
 #include <sof/list.h>
 #include <sof/schedule/ll_schedule.h>
 #include <sof/schedule/schedule.h>
 #include <sof/schedule/task.h>
-#include <sof/spinlock.h>
-#include <sof/string.h>
+#include <rtos/spinlock.h>
+#include <rtos/string.h>
 #include <ipc/header.h>
 #include <ipc/stream.h>
 #include <ipc/topology.h>
@@ -23,6 +23,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+LOG_MODULE_DECLARE(pipe, CONFIG_SOF_LOG_LEVEL);
 
 /* f11818eb-e92e-4082-82a3-dc54c604ebb3 */
 DECLARE_SOF_UUID("pipe-task", pipe_task_uuid, 0xf11818eb, 0xe92e, 0x4082,
@@ -44,21 +46,42 @@ static enum task_state pipeline_task_cmd(struct pipeline *p,
 	int err, cmd = p->trigger.cmd;
 
 	if (!p->trigger.host) {
+		int ret;
+
 		p->trigger.cmd = COMP_TRIGGER_NO_ACTION;
 
 		switch (cmd) {
 		case COMP_TRIGGER_STOP:
 		case COMP_TRIGGER_PAUSE:
-			return p->trigger.aborted ? SOF_TASK_STATE_RUNNING :
-				SOF_TASK_STATE_COMPLETED;
+			/* if the trigger was aborted, keep the task running */
+			if (p->trigger.aborted) {
+				ret = SOF_TASK_STATE_RUNNING;
+				break;
+			}
+
+			/*
+			 * if there's a trigger pending, keep the task running until it is executed
+			 */
+			if (p->trigger.pending)
+				ret = SOF_TASK_STATE_RUNNING;
+			else
+				ret = SOF_TASK_STATE_COMPLETED;
+			break;
 		case COMP_TRIGGER_PRE_START:
 		case COMP_TRIGGER_PRE_RELEASE:
-			if (p->status == COMP_STATE_ACTIVE)
-				return SOF_TASK_STATE_RUNNING;
+			if (p->status == COMP_STATE_ACTIVE) {
+				ret = SOF_TASK_STATE_RUNNING;
+				break;
+			}
 			p->status = COMP_STATE_ACTIVE;
+			COMPILER_FALLTHROUGH;
+		default:
+			ret = SOF_TASK_STATE_RESCHEDULE;
+			break;
 		}
 
-		return SOF_TASK_STATE_RESCHEDULE;
+		p->trigger.aborted = false;
+		return ret;
 	}
 
 	err = pipeline_trigger_run(p, p->trigger.host, cmd);
@@ -103,7 +126,7 @@ static enum task_state pipeline_task_cmd(struct pipeline *p,
 			err = SOF_TASK_STATE_COMPLETED;
 		} else {
 			p->status = COMP_STATE_ACTIVE;
-			err = SOF_TASK_STATE_RESCHEDULE;
+			err = SOF_TASK_STATE_RUNNING;
 		}
 	}
 
@@ -257,6 +280,7 @@ void pipeline_schedule_triggered(struct pipeline_walk_context *ctx,
 				 * components.
 				 */
 				p->trigger.cmd = cmd;
+				p->trigger.pending = true;
 				p->trigger.host = ppl_data->start;
 				ppl_data->start = NULL;
 			} else {
@@ -277,6 +301,7 @@ void pipeline_schedule_triggered(struct pipeline_walk_context *ctx,
 				 * active immediately.
 				 */
 				p->trigger.cmd = cmd;
+				p->trigger.pending = true;
 				p->trigger.host = ppl_data->start;
 				ppl_data->start = NULL;
 			} else {
@@ -344,6 +369,16 @@ void pipeline_schedule_copy(struct pipeline *p, uint64_t start)
 	/* disable system agent panic for DMA driven pipelines */
 	if (!pipeline_is_timer_driven(p))
 		sa_set_panic_on_delay(false);
+
+	/*
+	 * With connected pipelines some pipelines can be re-used for multiple
+	 * streams. E.g. if playback pipelines A and B are connected on a mixer,
+	 * belonging to pipeline C, leading to a DAI, if A is already streaming,
+	 * when we attempt to start B, we don't need to schedule pipeline C -
+	 * it's already running.
+	 */
+	if (task_is_active(p->pipe_task))
+		return;
 
 	if (p->sched_next && task_is_active(p->sched_next->pipe_task))
 		schedule_task_before(p->pipe_task, start, p->period,

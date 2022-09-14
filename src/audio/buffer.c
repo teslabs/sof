@@ -7,17 +7,19 @@
 
 #include <sof/audio/buffer.h>
 #include <sof/audio/component.h>
-#include <sof/drivers/interrupt.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/cache.h>
+#include <rtos/interrupt.h>
+#include <rtos/alloc.h>
+#include <rtos/cache.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/notifier.h>
 #include <sof/list.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <ipc/topology.h>
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(buffer, CONFIG_SOF_LOG_LEVEL);
 
 /* 42544c92-8e92-4e41-b679-34519f1c1d28 */
 DECLARE_SOF_RT_UUID("buffer", buffer_uuid, 0x42544c92, 0x8e92, 0x4e41,
@@ -27,6 +29,7 @@ DECLARE_TR_CTX(buffer_tr, SOF_UUID(buffer_uuid), LOG_LEVEL_INFO);
 struct comp_buffer *buffer_alloc(uint32_t size, uint32_t caps, uint32_t align)
 {
 	struct comp_buffer *buffer;
+	struct comp_buffer __sparse_cache *buffer_c;
 
 	tr_dbg(&buffer_tr, "buffer_alloc()");
 
@@ -53,25 +56,42 @@ struct comp_buffer *buffer_alloc(uint32_t size, uint32_t caps, uint32_t align)
 		return NULL;
 	}
 
-	buffer_init(buffer, size, caps);
-	coherent_init_thread(buffer, c);
 	list_init(&buffer->source_list);
 	list_init(&buffer->sink_list);
+
+	coherent_init_thread(buffer, c);
+
+	/* From here no more uncached access to the buffer object, except its list headers */
+	buffer_c = buffer_acquire(buffer);
+	buffer_init(buffer_c, size, caps);
+	buffer_release(buffer_c);
+
+	/*
+	 * The buffer hasn't yet been marked as shared, hence buffer_release()
+	 * hasn't written back and invalidated the cache. Therefore we have to
+	 * do this manually now before adding to the lists. Buffer list
+	 * structures are always accessed uncached and they're never modified at
+	 * run-time, i.e. buffers are never relinked. So we have to make sure,
+	 * that what we have written into buffer's cache is in RAM before
+	 * modifying that RAM bypassing cache, and that after this cache is
+	 * re-loaded again.
+	 */
+	dcache_writeback_invalidate_region(uncache_to_cache(buffer), sizeof(*buffer));
 
 	return buffer;
 }
 
-void buffer_zero(struct comp_buffer *buffer)
+void buffer_zero(struct comp_buffer __sparse_cache *buffer)
 {
 	buf_dbg(buffer, "stream_zero()");
 
 	bzero(buffer->stream.addr, buffer->stream.size);
 	if (buffer->caps & SOF_MEM_CAPS_DMA)
-		dcache_writeback_region(buffer->stream.addr,
+		dcache_writeback_region((__sparse_force void __sparse_cache *)buffer->stream.addr,
 					buffer->stream.size);
 }
 
-int buffer_set_size(struct comp_buffer *buffer, uint32_t size)
+int buffer_set_size(struct comp_buffer __sparse_cache *buffer, uint32_t size)
 {
 	void *new_ptr = NULL;
 
@@ -103,8 +123,8 @@ int buffer_set_size(struct comp_buffer *buffer, uint32_t size)
 	return 0;
 }
 
-int buffer_set_params(struct comp_buffer *buffer, struct sof_ipc_stream_params *params,
-		      bool force_update)
+int buffer_set_params(struct comp_buffer __sparse_cache *buffer,
+		      struct sof_ipc_stream_params *params, bool force_update)
 {
 	int ret;
 	int i;
@@ -132,8 +152,8 @@ int buffer_set_params(struct comp_buffer *buffer, struct sof_ipc_stream_params *
 	return 0;
 }
 
-bool buffer_params_match(struct comp_buffer *buffer, struct sof_ipc_stream_params *params,
-			 uint32_t flag)
+bool buffer_params_match(struct comp_buffer __sparse_cache *buffer,
+			 struct sof_ipc_stream_params *params, uint32_t flag)
 {
 	assert(params);
 
@@ -175,7 +195,19 @@ void buffer_free(struct comp_buffer *buffer)
 	rfree(buffer);
 }
 
-void comp_update_buffer_produce(struct comp_buffer *buffer, uint32_t bytes)
+/*
+ * comp_update_buffer_produce() and comp_update_buffer_consume() send
+ * NOTIFIER_ID_BUFFER_PRODUCE and NOTIFIER_ID_BUFFER_CONSUME notifier events
+ * respectively. The only recipient of those notifications is probes. The
+ * target for those notifications is always the current core, therefore notifier
+ * callbacks will be called synchronously from notifier_event() calls. Therefore
+ * we cannot pass unlocked buffer pointers to probes, because if they try to
+ * acquire the buffer, that can cause a deadlock. In general locked objects
+ * shouldn't be passed to potentially asynchronous contexts, but here we have no
+ * choice but to use our knowledge of the local notifier behaviour and pass
+ * locked buffers to notification recipients.
+ */
+void comp_update_buffer_produce(struct comp_buffer __sparse_cache *buffer, uint32_t bytes)
 {
 	struct buffer_cb_transact cb_data = {
 		.buffer = buffer,
@@ -193,11 +225,10 @@ void comp_update_buffer_produce(struct comp_buffer *buffer, uint32_t bytes)
 		return;
 	}
 
-	buffer = buffer_acquire(buffer);
-
 	audio_stream_produce(&buffer->stream, bytes);
 
-	notifier_event(buffer, NOTIFIER_ID_BUFFER_PRODUCE,
+	/* Notifier looks for the pointer value to match it against registration */
+	notifier_event(cache_to_uncache(buffer), NOTIFIER_ID_BUFFER_PRODUCE,
 		       NOTIFIER_TARGET_CORE_LOCAL, &cb_data, sizeof(cb_data));
 
 	buf_dbg(buffer, "comp_update_buffer_produce(), ((buffer->avail << 16) | buffer->free) = %08x, ((buffer->id << 16) | buffer->size) = %08x",
@@ -207,11 +238,9 @@ void comp_update_buffer_produce(struct comp_buffer *buffer, uint32_t bytes)
 	buf_dbg(buffer, "comp_update_buffer_produce(), ((buffer->r_ptr - buffer->addr) << 16 | (buffer->w_ptr - buffer->addr)) = %08x",
 		((char *)buffer->stream.r_ptr - (char *)buffer->stream.addr) << 16 |
 		((char *)buffer->stream.w_ptr - (char *)buffer->stream.addr));
-
-	buffer = buffer_release(buffer);
 }
 
-void comp_update_buffer_consume(struct comp_buffer *buffer, uint32_t bytes)
+void comp_update_buffer_consume(struct comp_buffer __sparse_cache *buffer, uint32_t bytes)
 {
 	struct buffer_cb_transact cb_data = {
 		.buffer = buffer,
@@ -229,11 +258,9 @@ void comp_update_buffer_consume(struct comp_buffer *buffer, uint32_t bytes)
 		return;
 	}
 
-	buffer = buffer_acquire(buffer);
-
 	audio_stream_consume(&buffer->stream, bytes);
 
-	notifier_event(buffer, NOTIFIER_ID_BUFFER_CONSUME,
+	notifier_event(cache_to_uncache(buffer), NOTIFIER_ID_BUFFER_CONSUME,
 		       NOTIFIER_TARGET_CORE_LOCAL, &cb_data, sizeof(cb_data));
 
 	buf_dbg(buffer, "comp_update_buffer_consume(), (buffer->avail << 16) | buffer->free = %08x, (buffer->id << 16) | buffer->size = %08x, (buffer->r_ptr - buffer->addr) << 16 | (buffer->w_ptr - buffer->addr)) = %08x",
@@ -242,6 +269,4 @@ void comp_update_buffer_consume(struct comp_buffer *buffer, uint32_t bytes)
 		(buffer->id << 16) | buffer->stream.size,
 		((char *)buffer->stream.r_ptr - (char *)buffer->stream.addr) << 16 |
 		((char *)buffer->stream.w_ptr - (char *)buffer->stream.addr));
-
-	buffer = buffer_release(buffer);
 }

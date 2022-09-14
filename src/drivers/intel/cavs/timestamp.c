@@ -7,7 +7,7 @@
 #include <sof/drivers/dmic.h>
 #include <sof/drivers/ssp.h>
 #include <sof/drivers/timestamp.h>
-#include <sof/lib/clk.h>
+#include <rtos/clk.h>
 #include <sof/lib/dai.h>
 #include <sof/lib/io.h>
 #include <ipc/dai.h>
@@ -15,6 +15,8 @@
 
 #include <errno.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(dai_ts, CONFIG_SOF_LOG_LEVEL);
 
 int timestamp_hda_config(struct dai *dai, struct timestamp_cfg *cfg)
 {
@@ -100,7 +102,7 @@ int timestamp_dmic_config(struct dai *dai, struct timestamp_cfg *cfg)
 		return -EINVAL;
 	}
 
-	cfg->walclk_rate = DMIC_HW_IOCLK;
+	cfg->walclk_rate = CONFIG_DMIC_HW_IOCLK;
 
 	return 0;
 }

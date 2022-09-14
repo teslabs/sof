@@ -9,10 +9,9 @@
 # github.com also has a powerful web editor that can be used without
 # committing.
 
-# This is the name of this workflow and should technically be called
-# something like "Main Workflow" but the place where most people see
-# this name is the Checks window next to other, non-github checks.
-name: GitHub Actions
+# TODO: finishing scattering this very old workflow to more specific
+# .yml files
+name: Main Actions
 
 # yamllint disable-line rule:truthy
 on:
@@ -37,7 +36,7 @@ on:
 jobs:
 
   doxygen:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
 
     steps:
       - uses: actions/checkout@v2
@@ -45,36 +44,78 @@ jobs:
       - name: apt get doxygen graphviz
         run: sudo apt-get -y install ninja-build doxygen graphviz
 
-      - name: list all warnings, warnings are not failures
+      - name: Show warnings but fail only on errors
         run: cmake -GNinja -S doc -B docbuild && ninja -C docbuild -v doc
 
-      # Build again (it's very quick) so warnings don't go unnoticed
-      - name: fail and stop on first warning
-        run: printf 'WARN_AS_ERROR = YES\n' >> doc/sof.doxygen.in &&
+      # Build again (it's very quick) so warnings don't go unnoticed.
+      # For older doxygen versions that don't have FAIL_ON_WARNINGS, use
+      # WARN_AS_ERROR = YES instead. 'YES' is inferior because it stops
+      # on the first error.
+      #
+      # Note some doxygen bug(s) can cause some specific error types to
+      # escape WARN_AS_ERROR, example:
+      # https://github.com/doxygen/doxygen/issues/7970 and
+      # https://github.com/thesofproject/sof/pull/5978
+
+      - name: Fail on warnings
+        run: printf
+          'WARN_AS_ERROR = FAIL_ON_WARNINGS\n' >> doc/sof.doxygen.in &&
           ninja -C docbuild -v doc
 
 
+  # This is unfortunately a mix of sof-docs/.github/ + the previous job
+  # above, duplicating a bit of both: please keep in sync with both. We
+  # build sof-docs here too because waiting for sof-docs CI to find
+  # regressions introduced in sof.git is very time-consuming, see
+  # example in
+  # https://github.com/thesofproject/sof/pull/5731#issuecomment-1175630147
+  sof-docs:
+    runs-on: ubuntu-20.04  # sof-docs is still stuck to this for now
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: apt-get update
+        run: sudo apt-get update
+
+      - name: apt-get install
+        run: sudo apt-get -y install
+             doxygen make default-jre graphviz cmake ninja-build
+
+      - name: doxygen
+        run: cmake -GNinja -S doc/ -B doxybuild/ && ninja -C doxybuild/ -v doc
+
+        # Nested git clone, this is fine
+      - name: clone sof-docs
+        run: git clone https://github.com/thesofproject/sof-docs sof-docs/
+
+      - name: PATH += .local/bin
+        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: 'pip install -r sof-docs/scripts/requirements.txt'
+        run: pip install -r sof-docs/scripts/requirements.txt
+
+      - name: build sof-docs
+        run: make -C sof-docs/ html SOF_DOC_BUILD="$(pwd)"/doxybuild/
+
+
   testbench:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
 
     steps:
       - uses: actions/checkout@v2
         with: {fetch-depth: 5}
 
-      - name: apt get valgrind
-        run: sudo apt-get update && sudo apt-get -y install valgrind
-
-      - name: docker
-        run: docker pull thesofproject/sof && docker tag thesofproject/sof sof
+      - name: apt get
+        run: sudo apt-get update &&
+             sudo apt-get -y install valgrind alsa-utils libasound2-dev
+             octave octave-io octave-signal
 
       # testbench needs some topologies.
-      # Use our docker container to avoid the "unsupported widget type asrc"
-      # bug in ALSA 1.2.2
-      # https://github.com/thesofproject/sof/issues/2543
       - name: build test topologies
-        run: ./scripts/docker-run.sh ./scripts/build-tools.sh -t ||
+        run: ./scripts/build-tools.sh -t ||
              VERBOSE=1 NO_PROCESSORS=1 USE_XARGS=no
-             ./scripts/docker-run.sh ./scripts/build-tools.sh -t
+             ./scripts/build-tools.sh -t
 
       - name: build testbench
         run: ./scripts/rebuild-testbench.sh
@@ -83,18 +124,39 @@ jobs:
         run: ./scripts/host-testbench.sh
 
 
+  # This is a bit redundant with the other jobs below and with the (much
+  # faster!) installer[.yml] but it may differ in which platforms are
+  # built.  This makes sure platforms without any open-source toolchain
+  # are added in the right place and do not accidentally break the -a
+  # option, Docker testing etc.
+  gcc-build-default-platforms:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v2
+        with: {fetch-depth: 5, submodules: recursive}
+
+      - name: docker
+        run: docker pull thesofproject/sof && docker tag thesofproject/sof sof
+
+      - name: xtensa-build-all.sh -a
+        run: ./scripts/docker-run.sh ./scripts/xtensa-build-all.sh -a ||
+             ./scripts/docker-run.sh ./scripts/xtensa-build-all.sh -a -j 1
+
+
   gcc-build-only:
     runs-on: ubuntu-20.04
 
     strategy:
       fail-fast: false
       matrix:
-        # Use groups to avoid spamming the web interface.
-        # Don't use a single big group so a single failure does not block
-        # all other builds.
+        # Use groups to avoid spamming the web interface. Pay attention
+        # to COMMAS. Don't use a single big group so a single failure
+        # does not block all other builds.
         platform: [imx8ulp,
-                   sue jsl tgl,
-                   rn,
+                   tgl,
+                   rn rmb,
+                   mt8186 mt8195,
         ]
 
     steps:
@@ -105,7 +167,7 @@ jobs:
       - name: docker
         run: docker pull thesofproject/sof && docker tag thesofproject/sof sof
 
-      - name: xtensa-build-all
+      - name: xtensa-build-all.sh platforms
         env:
           PLATFORM: ${{ matrix.platform }}
         run: ./scripts/docker-run.sh
@@ -128,8 +190,8 @@ jobs:
         # xtensa-build-all.sh.  Pay attention to commas and whitespace.
         # The main reason for these groups is to avoid the matrix
         # swarming the Github web interface and burying other checks.
+        # See longer example above.
         platform: [imx8 imx8x imx8m,
-                   byt cht, bdw hsw, apl skl kbl, cnl icl,
         ]
 
     steps:
@@ -144,7 +206,7 @@ jobs:
       - name: docker SOF
         run: docker pull thesofproject/sof && docker tag thesofproject/sof sof
 
-      - name: xtensa-build-all -o no-agent
+      - name: xtensa-build-all.sh -o no-agent platforms
         env:
           PLATFORM: ${{ matrix.platform }}
         run: ./scripts/docker-run.sh

@@ -5,10 +5,10 @@
 // Author: Tomasz Lauda <tomasz.lauda@linux.intel.com>
 
 #include <sof/audio/component.h>
-#include <sof/bit.h>
-#include <sof/drivers/interrupt.h>
-#include <sof/drivers/timer.h>
-#include <sof/lib/alloc.h>
+#include <rtos/bit.h>
+#include <rtos/interrupt.h>
+#include <rtos/timer.h>
+#include <rtos/alloc.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/dma.h>
 #include <sof/lib/memory.h>
@@ -26,6 +26,8 @@
 #include <stdint.h>
 
 #define DMA_DOMAIN_OWNER_INVALID	0xFFFFFFFF
+
+LOG_MODULE_DECLARE(ll_schedule, CONFIG_SOF_LOG_LEVEL);
 
 struct dma_domain_data {
 	int irq;
@@ -208,8 +210,8 @@ static int dma_single_chan_domain_register(struct ll_schedule_domain *domain,
 
 		/* unregister from current channel */
 		dma_single_chan_domain_irq_unregister(data);
-		dma_interrupt(data->channel, DMA_IRQ_MASK);
-		dma_interrupt(data->channel, DMA_IRQ_CLEAR);
+		dma_interrupt_legacy(data->channel, DMA_IRQ_MASK);
+		dma_interrupt_legacy(data->channel, DMA_IRQ_CLEAR);
 
 		dma_domain->channel_changed = true;
 
@@ -232,7 +234,7 @@ static int dma_single_chan_domain_register(struct ll_schedule_domain *domain,
 		goto out;
 
 	/* enable channel interrupt */
-	dma_interrupt(data->channel, DMA_IRQ_UNMASK);
+	dma_interrupt_legacy(data->channel, DMA_IRQ_UNMASK);
 
 	/* unmask if we are the owner */
 	if (dma_domain->owner == core)
@@ -331,8 +333,8 @@ static void dma_domain_unregister_owner(struct ll_schedule_domain *domain,
 
 	/* no other channel is running */
 	dma_single_chan_domain_irq_unregister(data);
-	dma_interrupt(data->channel, DMA_IRQ_MASK);
-	dma_interrupt(data->channel, DMA_IRQ_CLEAR);
+	dma_interrupt_legacy(data->channel, DMA_IRQ_MASK);
+	dma_interrupt_legacy(data->channel, DMA_IRQ_CLEAR);
 	data->channel = NULL;
 
 	if (channel) {
@@ -411,7 +413,7 @@ static void dma_single_chan_domain_enable(struct ll_schedule_domain *domain,
 	if (!data->channel)
 		return;
 
-	dma_interrupt(data->channel, DMA_IRQ_UNMASK);
+	dma_interrupt_legacy(data->channel, DMA_IRQ_UNMASK);
 	interrupt_unmask(data->irq, core);
 }
 
@@ -450,7 +452,7 @@ static void dma_single_chan_domain_set(struct ll_schedule_domain *domain,
 		return;
 
 	if (dma_domain->channel_changed) {
-		domain->next_tick = k_cycle_get_64_atomic();
+		domain->next_tick = sof_cycle_get_64_atomic();
 
 		dma_domain->channel_changed = false;
 	} else {
@@ -475,7 +477,7 @@ static void dma_single_chan_domain_clear(struct ll_schedule_domain *domain)
 	if (!data->channel)
 		return;
 
-	dma_interrupt(data->channel, DMA_IRQ_CLEAR);
+	dma_interrupt_legacy(data->channel, DMA_IRQ_CLEAR);
 }
 
 /**
@@ -487,7 +489,7 @@ static void dma_single_chan_domain_clear(struct ll_schedule_domain *domain)
 static bool dma_single_chan_domain_is_pending(struct ll_schedule_domain *domain,
 					      struct task *task, struct comp_dev **comp)
 {
-	return task->start <= k_cycle_get_64_atomic();
+	return task->start <= sof_cycle_get_64_atomic();
 }
 
 /**
@@ -509,8 +511,8 @@ static void dma_domain_changed(void *arg, enum notify_id type, void *data)
 	dma_single_chan_domain_irq_unregister(domain_data);
 
 	if (domain_data->channel->core == core) {
-		dma_interrupt(domain_data->channel, DMA_IRQ_MASK);
-		dma_interrupt(domain_data->channel, DMA_IRQ_CLEAR);
+		dma_interrupt_legacy(domain_data->channel, DMA_IRQ_MASK);
+		dma_interrupt_legacy(domain_data->channel, DMA_IRQ_CLEAR);
 	}
 
 	/* register to the new DMA channel */

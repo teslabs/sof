@@ -10,19 +10,20 @@
 #include <sof/audio/pipeline.h>
 #include <sof/common.h>
 #include <sof/drivers/idc.h>
+#include <rtos/interrupt.h>
 #include <sof/ipc/topology.h>
 #include <sof/ipc/common.h>
 #include <sof/ipc/msg.h>
 #include <sof/ipc/driver.h>
 #include <sof/ipc/schedule.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/cache.h>
+#include <rtos/alloc.h>
+#include <rtos/cache.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/mailbox.h>
 #include <sof/list.h>
 #include <sof/platform.h>
 #include <sof/sof.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <ipc/dai.h>
 #include <ipc/header.h>
 #include <ipc/stream.h>
@@ -31,6 +32,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+LOG_MODULE_DECLARE(ipc, CONFIG_SOF_LOG_LEVEL);
 
 /* create a new component in the pipeline */
 struct comp_buffer *buffer_new(const struct sof_ipc_buffer *desc)
@@ -54,8 +57,6 @@ struct comp_buffer *buffer_new(const struct sof_ipc_buffer *desc)
 
 		memcpy_s(&buffer->tctx, sizeof(struct tr_ctx),
 			 &buffer_tr, sizeof(struct tr_ctx));
-
-		dcache_writeback_invalidate_region(buffer, sizeof(*buffer));
 	}
 
 	return buffer;
@@ -83,7 +84,7 @@ int32_t ipc_comp_pipe_id(const struct ipc_comp_dev *icd)
  */
 static void comp_update_params(uint32_t flag,
 			       struct sof_ipc_stream_params *params,
-			       struct comp_buffer *buffer)
+			       struct comp_buffer __sparse_cache *buffer)
 {
 	if (flag & BUFF_PARAMS_FRAME_FMT)
 		params->frame_fmt = buffer->stream.frame_fmt;
@@ -105,9 +106,9 @@ int comp_verify_params(struct comp_dev *dev, uint32_t flag,
 	struct list_item *source_list;
 	struct list_item *sink_list;
 	struct list_item *clist;
-	struct list_item *curr;
 	struct comp_buffer *sinkb;
 	struct comp_buffer *buf;
+	struct comp_buffer __sparse_cache *buf_c;
 	int dir = dev->direction;
 
 	if (!params) {
@@ -122,55 +123,52 @@ int comp_verify_params(struct comp_dev *dev, uint32_t flag,
 	 * has only one sink or one source buffer.
 	 */
 	if (list_is_empty(source_list) != list_is_empty(sink_list)) {
-		if (!list_is_empty(source_list))
-			buf = list_first_item(&dev->bsource_list,
+		if (list_is_empty(sink_list))
+			buf = list_first_item(source_list,
 					      struct comp_buffer,
 					      sink_list);
 		else
-			buf = list_first_item(&dev->bsink_list,
+			buf = list_first_item(sink_list,
 					      struct comp_buffer,
 					      source_list);
 
-		buf = buffer_acquire(buf);
+		buf_c = buffer_acquire(buf);
 
 		/* update specific pcm parameter with buffer parameter if
 		 * specific flag is set.
 		 */
-		comp_update_params(flag, params, buf);
+		comp_update_params(flag, params, buf_c);
 
 		/* overwrite buffer parameters with modified pcm
 		 * parameters
 		 */
-		buffer_set_params(buf, params, BUFFER_UPDATE_FORCE);
+		buffer_set_params(buf_c, params, BUFFER_UPDATE_FORCE);
 
 		/* set component period frames */
-		component_set_nearest_period_frames(dev, buf->stream.rate);
+		component_set_nearest_period_frames(dev, buf_c->stream.rate);
 
-		buf = buffer_release(buf);
+		buffer_release(buf_c);
 	} else {
 		/* for other components we iterate over all downstream buffers
 		 * (for playback) or upstream buffers (for capture).
 		 */
 		buffer_list = comp_buffer_list(dev, dir);
-		clist = buffer_list->next;
 
-		while (clist != buffer_list) {
-			curr = clist;
-			buf = buffer_from_list(curr, struct comp_buffer, dir);
-			buf = buffer_acquire(buf);
-			clist = clist->next;
-			comp_update_params(flag, params, buf);
-			buffer_set_params(buf, params, BUFFER_UPDATE_FORCE);
-			buf = buffer_release(buf);
+		list_for_item(clist, buffer_list) {
+			buf = buffer_from_list(clist, struct comp_buffer, dir);
+			buf_c = buffer_acquire(buf);
+			comp_update_params(flag, params, buf_c);
+			buffer_set_params(buf_c, params, BUFFER_UPDATE_FORCE);
+			buffer_release(buf_c);
 		}
 
 		/* fetch sink buffer in order to calculate period frames */
 		sinkb = list_first_item(&dev->bsink_list, struct comp_buffer,
 					source_list);
 
-		sinkb = buffer_acquire(sinkb);
-		component_set_nearest_period_frames(dev, sinkb->stream.rate);
-		sinkb = buffer_release(sinkb);
+		buf_c = buffer_acquire(sinkb);
+		component_set_nearest_period_frames(dev, buf_c->stream.rate);
+		buffer_release(buf_c);
 	}
 
 	return 0;
@@ -181,12 +179,11 @@ int comp_buffer_connect(struct comp_dev *comp, uint32_t comp_core,
 {
 	/* check if it's a connection between cores */
 	if (buffer->core != comp_core) {
-
 		/* set the buffer as a coherent object */
-		coherent_shared(buffer, c);
+		coherent_shared_thread(buffer, c);
 
 		if (!comp->is_shared)
-			comp = comp_make_shared(comp);
+			comp_make_shared(comp);
 	}
 
 	return pipeline_connect(comp, buffer, dir);
@@ -264,6 +261,8 @@ int ipc_pipeline_complete(struct ipc *ipc, uint32_t comp_id)
 int ipc_comp_free(struct ipc *ipc, uint32_t comp_id)
 {
 	struct ipc_comp_dev *icd;
+	struct list_item *clist, *tmp;
+	uint32_t flags;
 
 	/* check whether component exists */
 	icd = ipc_get_comp_by_id(ipc, comp_id);
@@ -290,6 +289,34 @@ int ipc_comp_free(struct ipc *ipc, uint32_t comp_id)
 		       comp_id, icd->cd->state);
 		return -EINVAL;
 	}
+
+	irq_local_disable(flags);
+	list_for_item_safe(clist, tmp, &icd->cd->bsource_list) {
+		struct comp_buffer *buffer = container_of(clist, struct comp_buffer, sink_list);
+		struct comp_buffer __sparse_cache *buffer_c = buffer_acquire(buffer);
+
+		buffer_c->sink = NULL;
+		buffer_release(buffer_c);
+		/* Also if it isn't shared - we are about to modify uncached data */
+		dcache_writeback_invalidate_region(uncache_to_cache(buffer),
+						   sizeof(*buffer));
+		/* This breaks the list, but we anyway delete all buffers */
+		list_init(clist);
+	}
+
+	list_for_item_safe(clist, tmp, &icd->cd->bsink_list) {
+		struct comp_buffer *buffer = container_of(clist, struct comp_buffer, source_list);
+		struct comp_buffer __sparse_cache *buffer_c = buffer_acquire(buffer);
+
+		buffer_c->source = NULL;
+		buffer_release(buffer_c);
+		/* Also if it isn't shared - we are about to modify uncached data */
+		dcache_writeback_invalidate_region(uncache_to_cache(buffer),
+						   sizeof(*buffer));
+		/* This breaks the list, but we anyway delete all buffers */
+		list_init(clist);
+	}
+	irq_local_enable(flags);
 
 	/* free component and remove from list */
 	comp_free(icd->cd);

@@ -8,10 +8,10 @@
 #include <sof/audio/component.h>
 #include <sof/common.h>
 #include <sof/drivers/ssp.h>
-#include <sof/lib/alloc.h>
+#include <rtos/alloc.h>
 #include <sof/lib/dai.h>
 #include <sof/lib/dma.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <sof/trace/trace.h>
 #include <ipc/dai.h>
 #include <ipc/dai-intel.h>

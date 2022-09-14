@@ -9,9 +9,9 @@
  */
 
 #include <sof/audio/component_ext.h>
-#include <sof/drivers/interrupt.h>
-#include <sof/drivers/timer.h>
-#include <sof/lib/clk.h>
+#include <rtos/interrupt.h>
+#include <rtos/timer.h>
+#include <rtos/clk.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/shim.h>
 #include <sof/platform.h>
@@ -169,7 +169,7 @@ void platform_dai_timestamp(struct comp_dev *dai,
 		posn->flags |= SOF_TIME_DAI_VALID;
 
 	/* get SSP wallclock - DAI sets this to stream start value */
-	posn->wallclock = k_cycle_get_64() - posn->wallclock;
+	posn->wallclock = sof_cycle_get_64() - posn->wallclock;
 	posn->wallclock_hz = clock_get_freq(PLATFORM_DEFAULT_CLOCK);
 	posn->flags |= SOF_TIME_WALL_VALID | SOF_TIME_WALL_64;
 }
@@ -178,7 +178,7 @@ void platform_dai_timestamp(struct comp_dev *dai,
 void platform_dai_wallclock(struct comp_dev *dai, uint64_t *wallclock)
 {
 	/* only 1 wallclock on BYT */
-	*wallclock = k_cycle_get_64();
+	*wallclock = sof_cycle_get_64();
 }
 
 #ifndef __ZEPHYR__

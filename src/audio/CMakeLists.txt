@@ -1,15 +1,20 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
+if(CONFIG_IPC_MAJOR_3)
+	set(mixer_src mixer/mixer.c mixer/mixer_generic.c mixer/mixer_hifi3.c)
+elseif(CONFIG_IPC_MAJOR_4)
+	set(mixer_src mixin_mixout.c)
+endif()
+
 if(NOT CONFIG_LIBRARY)
 	add_local_sources(sof
-		host.c
+		host-legacy.c
 		component.c
-		data_blob.c
 		buffer.c
 		channel_map.c
 	)
-	if(CONFIG_COMP_VOLUME)
-		add_subdirectory(volume)
+	if(CONFIG_COMP_BLOB)
+		add_local_sources(sof data_blob.c)
 	endif()
 	if(CONFIG_COMP_SRC)
 		add_subdirectory(src)
@@ -42,7 +47,7 @@ if(NOT CONFIG_LIBRARY)
 	endif()
 	if(CONFIG_COMP_MIXER)
 		add_local_sources(sof
-			mixer.c
+			${mixer_src}
 		)
 	endif()
 	if(CONFIG_COMP_MUX)
@@ -55,7 +60,7 @@ if(NOT CONFIG_LIBRARY)
 	endif()
 	if(CONFIG_COMP_DAI)
 		add_local_sources(sof
-			dai.c
+			dai-legacy.c
 		)
 	endif()
 	if(CONFIG_COMP_KPB)
@@ -83,9 +88,28 @@ if(NOT CONFIG_LIBRARY)
 		  )
 	  else()
 		message(INFO "Link with google_rtc_audio_processing")
-	    target_link_directories(sof PRIVATE ${CMAKE_SOURCE_DIR}/third_party/lib)
+		target_link_directories(sof PRIVATE ${CMAKE_SOURCE_DIR}/third_party/lib)
 		target_link_libraries(sof PRIVATE google_rtc_audio_processing)
-		target_link_libraries(sof PRIVATE google_rtc_audio_processing_tuning)
+		target_link_libraries(sof PRIVATE c++)
+		target_link_libraries(sof PRIVATE c++abi)
+		target_link_libraries(sof PRIVATE m)
+		target_link_libraries(sof PRIVATE c)
+	  endif()
+	endif()
+
+	if(CONFIG_COMP_GOOGLE_AUDIO_POST_PROCESSING)
+	  target_include_directories(sof PRIVATE ${CMAKE_SOURCE_DIR}/third_party/include)
+	  add_local_sources(sof
+		google_audio_post_processing.c
+		)
+	  if(CONFIG_GOOGLE_AUDIO_POST_PROCESSING_MOCK)
+		add_local_sources(sof
+		  google_audio_post_processing_mock.c
+		  )
+	  else()
+		message(INFO "Link with google_audio_post_processing")
+		target_link_directories(sof PRIVATE ${CMAKE_SOURCE_DIR}/third_party/lib)
+		target_link_libraries(sof PRIVATE google_audio_post_processing)
 		target_link_libraries(sof PRIVATE c++)
 		target_link_libraries(sof PRIVATE c++abi)
 		target_link_libraries(sof PRIVATE m)
@@ -104,17 +128,15 @@ if(NOT CONFIG_LIBRARY)
 	if(CONFIG_COMP_ASRC)
 		add_subdirectory(asrc)
 	endif()
-	if(CONFIG_COMP_CODEC_ADAPTER)
-		add_subdirectory(codec_adapter)
+	if(CONFIG_COMP_MODULE_ADAPTER)
+		add_subdirectory(module_adapter)
 	endif()
 	if(CONFIG_COMP_IGO_NR)
 		add_subdirectory(igo_nr)
 	endif()
 	if(CONFIG_COMP_COPIER)
-                add_local_sources(sof
-                        copier.c
-                )
-        endif()
+		add_subdirectory(copier)
+	endif()
 	if(CONFIG_COMP_RTNR)
 		add_subdirectory(rtnr)
 	endif()
@@ -178,11 +200,11 @@ check_optimization(fma -mfma -ftree-vectorize -DOPS_FMA)
 check_optimization(hifi2ep -mhifi2ep "" -DOPS_HIFI2EP)
 check_optimization(hifi3 -mhifi3 "" -DOPS_HIFI3)
 
-set(sof_audio_modules volume mixer src asrc eq-fir eq-iir dcblock crossover tdfb drc multiband_drc)
+set(sof_audio_modules mixer volume src asrc eq-fir eq-iir dcblock crossover tdfb drc multiband_drc)
 
 # sources for each module
-set(volume_sources volume/volume.c volume/volume_generic.c)
-set(mixer_sources mixer.c)
+set(volume_sources module_adapter/module_adapter.c module_adapter/module/generic.c module_adapter/module/volume/volume.c module_adapter/module/volume/volume_generic.c)
+set(mixer_sources ${mixer_src})
 set(src_sources src/src.c src/src_generic.c)
 set(asrc_sources asrc/asrc.c asrc/asrc_farrow.c asrc/asrc_farrow_generic.c)
 set(eq-fir_sources eq_fir/eq_fir.c eq_fir/eq_fir_generic.c)

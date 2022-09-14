@@ -31,15 +31,17 @@ void panic_dump(uint32_t p, struct sof_ipc_panic_info *panic_info,
 	SOF_NORETURN;
 
 #ifdef __ZEPHYR__
-#include <zephyr/kernel.h>
+#include <rtos/kernel.h>
 #define panic(x) k_panic()
 
-#define assert(x) \
-	do {			\
-		if (!(x))	\
-			k_oops();\
-	} while (0)
-#else
+#define assert(x) __ASSERT_NO_MSG(x)
+
+/* To print the asserted expression on failure:
+ *  #define assert(x) __ASSERT(x, #x)
+ */
+
+#else /* __ZEPHYR__ */
+
 
 void __panic(uint32_t p, char *filename, uint32_t linenum) SOF_NORETURN;
 
@@ -50,7 +52,9 @@ void __panic(uint32_t p, char *filename, uint32_t linenum) SOF_NORETURN;
 #define panic(x) __panic((x), (RELATIVE_FILE), (__LINE__))
 
 /* runtime assertion */
+#ifndef assert
 #define assert(cond) (void)((cond) || (panic(SOF_IPC_PANIC_ASSERT), 0))
+#endif
 
 #endif
 

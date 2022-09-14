@@ -20,29 +20,31 @@
  *    used to construct the DMA configuration for the host client 1 above.
  */
 
-#include <sof/atomic.h>
+#include <rtos/atomic.h>
 #include <sof/audio/component.h>
-#include <sof/bit.h>
+#include <rtos/bit.h>
 #include <sof/common.h>
 #include <sof/drivers/dw-dma.h>
-#include <sof/drivers/interrupt.h>
-#include <sof/drivers/timer.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/cache.h>
+#include <rtos/interrupt.h>
+#include <rtos/timer.h>
+#include <rtos/alloc.h>
+#include <rtos/cache.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/dma.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/pm_runtime.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <sof/lib/notifier.h>
 #include <sof/platform.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <ipc/topology.h>
 
 #include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(dw_dma, CONFIG_SOF_LOG_LEVEL);
 
 /* 298873bc-d532-4d93-a540-95ee6bcf3456 */
 DECLARE_SOF_UUID("dw-dma", dw_dma_uuid, 0x298873bc, 0xd532, 0x4d93,
@@ -443,7 +445,7 @@ static int dw_dma_stop(struct dma_chan_data *channel)
 	}
 
 #ifndef __ZEPHYR__
-	dcache_writeback_region(dw_chan->lli,
+	dcache_writeback_region((__sparse_force void __sparse_cache *)dw_chan->lli,
 				sizeof(struct dw_lli) * channel->desc_count);
 #endif
 #endif
@@ -464,7 +466,7 @@ static int dw_dma_status(struct dma_chan_data *channel,
 	status->state = channel->status;
 	status->r_pos = dma_reg_read(channel->dma, DW_SAR(channel->index));
 	status->w_pos = dma_reg_read(channel->dma, DW_DAR(channel->index));
-	status->timestamp = k_cycle_get_64();
+	status->timestamp = sof_cycle_get_64();
 
 	if (status->ipc_posn_data) {
 		uint32_t *llp = (uint32_t *)status->ipc_posn_data;
@@ -778,7 +780,7 @@ static int dw_dma_set_config(struct dma_chan_data *channel,
 
 	/* write back descriptors so DMA engine can read them directly */
 #ifndef __ZEPHYR__
-	dcache_writeback_region(dw_chan->lli,
+	dcache_writeback_region((__sparse_force void __sparse_cache *)dw_chan->lli,
 				sizeof(struct dw_lli) * channel->desc_count);
 #endif
 

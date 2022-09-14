@@ -6,19 +6,21 @@
 //         Liam Girdwood <liam.r.girdwood@linux.intel.com>
 
 #include <sof/common.h>
-#include <sof/drivers/interrupt.h>
-#include <sof/lib/alloc.h>
+#include <rtos/interrupt.h>
+#include <rtos/alloc.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/uuid.h>
 #include <sof/list.h>
 #include <sof/sof.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <sof/trace/trace.h>
 #include <ipc/topology.h>
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(irq, CONFIG_SOF_LOG_LEVEL);
 
 /* 1862d39a-3a84-4d64-8c91-dce1dfc122db */
 

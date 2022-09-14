@@ -12,11 +12,11 @@
  *          Tomasz Lauda <tomasz.lauda@linux.intel.com>
  */
 
-#include <sof/lib/alloc.h>
-#include <sof/lib/cache.h>
+#include <rtos/alloc.h>
+#include <rtos/cache.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/memory.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <sof/schedule/edf_schedule.h>
 #include <sof/schedule/schedule.h>
 #include <sof/schedule/task.h>

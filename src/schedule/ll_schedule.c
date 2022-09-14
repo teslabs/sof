@@ -6,13 +6,13 @@
 //         Keyon Jie <yang.jie@linux.intel.com>
 //         Tomasz Lauda <tomasz.lauda@linux.intel.com>
 
-#include <sof/atomic.h>
+#include <rtos/atomic.h>
 #include <sof/audio/pipeline.h>
 #include <sof/common.h>
-#include <sof/drivers/interrupt.h>
-#include <sof/drivers/timer.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/clk.h>
+#include <rtos/interrupt.h>
+#include <rtos/timer.h>
+#include <rtos/alloc.h>
+#include <rtos/clk.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/notifier.h>
@@ -24,7 +24,7 @@
 #include <sof/schedule/ll_schedule_domain.h>
 #include <sof/schedule/schedule.h>
 #include <sof/schedule/task.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <ipc/topology.h>
 
 #include <errno.h>
@@ -32,6 +32,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(ll_schedule, CONFIG_SOF_LOG_LEVEL);
 
 /* 4f9c3ec7-7b55-400c-86b3-502b4420e625 */
 DECLARE_SOF_UUID("ll-schedule", ll_sched_uuid, 0x4f9c3ec7, 0x7b55, 0x400c,
@@ -83,6 +85,16 @@ static void perf_ll_sched_trace(struct perf_cnt_data *pcd, int ignored)
 		(uint32_t)((pcd)->plat_delta_peak),
 		(uint32_t)((pcd)->cpu_delta_peak));
 }
+
+#if CONFIG_PERFORMANCE_COUNTERS_RUN_AVERAGE
+static void perf_avg_ll_sched_trace(struct perf_cnt_data *pcd, int ignored)
+{
+	tr_info(&ll_tr, "perf ll_work cpu avg %u (current peak %u)",
+		(uint32_t)((pcd)->cpu_delta_sum),
+		(uint32_t)((pcd)->cpu_delta_peak));
+}
+#endif
+
 #endif
 
 static bool schedule_ll_is_pending(struct ll_schedule_data *sch)
@@ -208,7 +220,7 @@ static void schedule_ll_tasks_execute(struct ll_schedule_data *sch)
 		tr_dbg(&ll_tr, "task %p %pU being started...", task, task->uid);
 
 #ifdef CONFIG_SCHEDULE_LOG_CYCLE_STATISTICS
-		cycles0 = (uint32_t)k_cycle_get_64();
+		cycles0 = (uint32_t)sof_cycle_get_64();
 #endif
 		task->state = SOF_TASK_STATE_RUNNING;
 
@@ -236,7 +248,7 @@ static void schedule_ll_tasks_execute(struct ll_schedule_data *sch)
 		k_spin_unlock(&domain->lock, key);
 
 #ifdef CONFIG_SCHEDULE_LOG_CYCLE_STATISTICS
-		cycles1 = (uint32_t)k_cycle_get_64();
+		cycles1 = (uint32_t)sof_cycle_get_64();
 		dsp_load_check(task, cycles0, cycles1);
 #endif
 	}
@@ -287,7 +299,7 @@ static void schedule_ll_tasks_run(void *data)
 
 	tr_dbg(&ll_tr, "timer interrupt on core %d, at %u, previous next_tick %u",
 	       core,
-	       (unsigned int)k_cycle_get_64_atomic(),
+	       (unsigned int)sof_cycle_get_64_atomic(),
 	       (unsigned int)domain->next_tick);
 
 	irq_local_disable(flags);
@@ -313,11 +325,12 @@ static void schedule_ll_tasks_run(void *data)
 		       NOTIFIER_TARGET_CORE_LOCAL, NULL, 0);
 
 	perf_cnt_stamp(&sch->pcd, perf_ll_sched_trace, 0 /* ignored */);
+	perf_cnt_average(&sch->pcd, perf_avg_ll_sched_trace, 0 /* ignored */);
 
 	key = k_spin_lock(&domain->lock);
 
 	/* reset the new_target_tick for the first core */
-	if (domain->new_target_tick < k_cycle_get_64_atomic())
+	if (domain->new_target_tick < sof_cycle_get_64_atomic())
 		domain->new_target_tick = UINT64_MAX;
 
 	/* update the new_target_tick according to tasks on current core */
@@ -367,7 +380,7 @@ static int schedule_ll_domain_set(struct ll_schedule_data *sch,
 
 	task_start_us = period ? period : start;
 	task_start_ticks = domain->ticks_per_ms * task_start_us / 1000;
-	task_start = task_start_ticks + k_cycle_get_64_atomic();
+	task_start = task_start_ticks + sof_cycle_get_64_atomic();
 
 	if (reference) {
 		task->start = reference->start;
@@ -402,7 +415,7 @@ static int schedule_ll_domain_set(struct ll_schedule_data *sch,
 
 	tr_info(&ll_tr, "new added task->start %u at %u",
 		(unsigned int)task->start,
-		(unsigned int)k_cycle_get_64_atomic());
+		(unsigned int)sof_cycle_get_64_atomic());
 	tr_info(&ll_tr, "num_tasks %ld total_num_tasks %ld",
 		atomic_read(&sch->num_tasks),
 		atomic_read(&domain->total_num_tasks));
@@ -685,7 +698,7 @@ static int reschedule_ll_task(void *data, struct task *task, uint64_t start)
 
 	time = sch->domain->ticks_per_ms * start / 1000;
 
-	time += k_cycle_get_64_atomic();
+	time += sof_cycle_get_64_atomic();
 
 	irq_local_disable(flags);
 
@@ -728,7 +741,7 @@ static void scheduler_free_ll(void *data, uint32_t flags)
 static void ll_scheduler_recalculate_tasks(struct ll_schedule_data *sch,
 					   struct clock_notify_data *clk_data)
 {
-	uint64_t current = k_cycle_get_64_atomic();
+	uint64_t current = sof_cycle_get_64_atomic();
 	struct list_item *tlist;
 	struct task *task;
 	uint64_t delta_ms;

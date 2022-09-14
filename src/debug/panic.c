@@ -7,11 +7,11 @@
 #include <sof/debug/backtrace.h>
 #include <sof/debug/debug.h>
 #include <sof/debug/panic.h>
-#include <sof/drivers/interrupt.h>
-#include <sof/lib/cache.h>
+#include <rtos/interrupt.h>
+#include <rtos/cache.h>
 #include <sof/lib/mailbox.h>
 #include <sof/platform.h>
-#include <sof/string.h>
+#include <rtos/string.h>
 #include <sof/trace/trace.h>
 #include <ipc/trace.h>
 

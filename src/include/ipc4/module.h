@@ -124,7 +124,7 @@ struct ipc4_module_init_instance {
 			uint32_t msg_tgt            : 1;
 			uint32_t _reserved_0        : 1;
 		} r;
-	} header;
+	} primary;
 
 	union {
 		uint32_t dat;
@@ -142,7 +142,7 @@ struct ipc4_module_init_instance {
 			uint32_t extended_init      : 1;
 			uint32_t _hw_reserved_2     : 2;
 		} r;
-	} data;
+	} extension;
 
 	struct ipc4_module_init_ext_init ext_init;
 	struct ipc4_module_init_ext_data ext_data;
@@ -181,7 +181,7 @@ struct ipc4_module_bind_unbind {
 			uint32_t msg_tgt : 1;
 			uint32_t _reserved_0 : 1;
 		} r;
-	} header;
+	} primary;
 
 	union {
 		uint32_t dat;
@@ -197,7 +197,7 @@ struct ipc4_module_bind_unbind {
 			uint32_t src_queue : SOF_IPC4_SRC_QUEUE_ID_BITFIELD_SIZE;
 			uint32_t _reserved_2 : 2;
 		} r;
-	} data;
+	} extension;
 } __attribute__((packed, aligned(4)));
 
 struct ipc4_module_large_config {
@@ -217,7 +217,7 @@ struct ipc4_module_large_config {
 			uint32_t msg_tgt : 1;
 			uint32_t _reserved_0 : 1;
 			} r;
-		} header;
+		} primary;
 
 	union {
 		uint32_t dat;
@@ -233,7 +233,7 @@ struct ipc4_module_large_config {
 			uint32_t init_block : 1;
 			uint32_t _reserved_2 : 2;
 		} r;
-	} data;
+	} extension;
 } __attribute__((packed, aligned(4)));
 
 struct ipc4_module_large_config_reply {
@@ -250,7 +250,7 @@ struct ipc4_module_large_config_reply {
 			uint32_t msg_tgt : 1;
 			uint32_t _reserved_0 : 1;
 			} r;
-		} header;
+		} primary;
 
 	union {
 		uint32_t dat;
@@ -266,7 +266,7 @@ struct ipc4_module_large_config_reply {
 			uint32_t init_block : 1;
 			uint32_t _reserved_2 : 2;
 		} r;
-	} data;
+	} extension;
 } __attribute__((packed, aligned(4)));
 
 struct ipc4_module_delete_instance {
@@ -284,7 +284,7 @@ struct ipc4_module_delete_instance {
 			uint32_t msg_tgt : 1;
 			uint32_t _reserved_0 : 1;
 		} r;
-	} header;
+	} primary;
 
 	union {
 		uint32_t dat;
@@ -293,7 +293,7 @@ struct ipc4_module_delete_instance {
 			uint32_t rsvd : 30;
 			uint32_t _reserved_1 : 2;
 		} r;
-	} data;
+	} extension;
 } __attribute__((packed, aligned(4)));
 
 struct ipc4_module_set_d0ix {
@@ -313,7 +313,7 @@ struct ipc4_module_set_d0ix {
 			uint32_t msg_tgt		: 1;
 			uint32_t _reserved_0	: 1;
 		} r;
-	} header;
+	} primary;
 
 	union {
 		uint32_t dat;
@@ -331,7 +331,7 @@ struct ipc4_module_set_d0ix {
 			uint32_t rsvd1			: 26;
 			uint32_t _reserved_2	: 2;
 		} r;
-	} data;
+	} extension;
 } __attribute__((packed, aligned(4)));
 
 struct ipc4_dx_state_info {
@@ -361,7 +361,7 @@ struct ipc4_module_set_dx {
 			uint32_t msg_tgt			: 1;
 			uint32_t _reserved_0		: 1;
 		} r;
-	} header;
+	} primary;
 
 	union {
 		uint32_t dat;
@@ -370,8 +370,39 @@ struct ipc4_module_set_dx {
 			uint32_t rsvd				: 30;
 			uint32_t _reserved_2		: 2;
 		} r;
-	} data;
+	} extension;
 } __attribute__((packed, aligned(4)));
+
+struct ipc4_module_load_library {
+	union {
+		uint32_t dat;
+
+		struct {
+			/* ID of HD/A HO DMA to load the code */
+			uint32_t dma_id				: 5;
+			uint32_t rsvd0				: 11;
+			/* ID of library */
+			uint32_t lib_id				: 4;
+			uint32_t rsvd1				: 4;
+			/* Global::LOAD_LIBRARY */
+			uint32_t type				: 5;
+			/* Msg::MSG_REQUEST */
+			uint32_t rsp				: 1;
+			/* Msg::FW_GEN_MSG */
+			uint32_t msg_tgt			: 1;
+			uint32_t _reserved_0		: 1;
+		} r;
+	} header;
+
+	union {
+		uint32_t dat;
+
+		struct {
+			uint32_t load_offset		: 30;
+			uint32_t _reserved_2		: 2;
+		} r;
+	} data;
+} __packed __aligned(4);
 
 #define IPC4_COMP_ID(x, y)	((x) << 16 | (y))
 #define IPC4_MOD_ID(x) ((x) >> 16)

@@ -12,7 +12,7 @@
 
 #include <sof/debug/gdb/gdb.h>
 #include <sof/debug/gdb/ringbuffer.h>
-#include <sof/lib/cache.h>
+#include <rtos/cache.h>
 #include <string.h>
 
 /* local functions */
@@ -475,6 +475,6 @@ static unsigned char *hex_to_mem(const unsigned char *buf, void *mem_,
 		mem++;
 	}
 
-	dcache_writeback_region((void *)mem, count);
+	dcache_writeback_region((__sparse_force void __sparse_cache *)mem, count);
 	return mem;
 }

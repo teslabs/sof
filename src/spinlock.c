@@ -4,11 +4,11 @@
 //
 // Author: Tomasz Lauda <tomasz.lauda@linux.intel.com>
 
-#include <sof/drivers/interrupt.h>
+#include <rtos/interrupt.h>
 #if CONFIG_DEBUG_LOCKS
 #include <sof/lib/uuid.h>
 #endif
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 
 #include <stdint.h>
 

@@ -6,14 +6,14 @@
 
 #include <sof/debug/panic.h>
 #include <sof/drivers/idc.h>
-#include <sof/drivers/interrupt.h>
+#include <rtos/interrupt.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/mailbox.h>
 #include <sof/lib/shim.h>
 #include <sof/platform.h>
 #include <sof/schedule/schedule.h>
 #include <sof/schedule/task.h>
-#include <sof/string.h>
+#include <rtos/string.h>
 #include <sof/trace/trace.h>
 #include <errno.h>
 #include <stdbool.h>

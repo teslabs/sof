@@ -7,16 +7,18 @@
 //         Rander Wang <rander.wang@intel.com>
 //         Janusz Jankowski <janusz.jankowski@linux.intel.com>
 
-#include <sof/drivers/timer.h>
-#include <sof/lib/clk.h>
+#include <rtos/timer.h>
+#include <rtos/clk.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/notifier.h>
 #include <sof/lib/uuid.h>
 #include <sof/platform.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <sof/trace/trace.h>
 #include <user/trace.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(clock, CONFIG_SOF_LOG_LEVEL);
 
 /* 8890ea76-0df9-44ae-87e6-994f4c15e9fa */
 DECLARE_SOF_UUID("clock", clock_uuid, 0x8890ea76, 0x0df9, 0x44ae,

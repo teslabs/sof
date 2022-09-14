@@ -9,16 +9,20 @@
 #include <sof/audio/component_ext.h>
 #include <sof/audio/pipeline.h>
 #include <sof/lib/dai.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <sof/list.h>
-#include <sof/spinlock.h>
-#include <sof/string.h>
+#include <rtos/spinlock.h>
+#include <rtos/string.h>
 #include <ipc/stream.h>
 #include <ipc/topology.h>
+#include <rtos/kernel.h>
+
 #include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+LOG_MODULE_DECLARE(pipe, CONFIG_SOF_LOG_LEVEL);
 
 /*
  * Check whether pipeline is incapable of acquiring data for capture.
@@ -50,6 +54,10 @@ pipeline_should_report_enodata_on_trigger(struct comp_dev *rsrc,
 
 	/* only applies for dailess pipelines */
 	if (pipe_source && dev_comp_type(pipe_source) == SOF_COMP_DAI)
+		return false;
+
+	/* source pipeline may not be active since priority is not higher than current one */
+	if (rsrc->pipeline->priority <= ppl_data->start->pipeline->priority)
 		return false;
 
 	/* if component on which we depend to provide data is inactive, then the
@@ -338,10 +346,21 @@ static int pipeline_comp_trigger(struct comp_dev *current,
 		return 0;
 	}
 
+	current->pipeline->trigger.pending = false;
+
 	/* send command to the component and update pipeline state */
 	err = comp_trigger(current, ppl_data->cmd);
-	if (err < 0)
+	switch (err) {
+	case 0:
+		break;
+	case PPL_STATUS_PATH_STOP:
+		current->pipeline->trigger.aborted = true;
+		COMPILER_FALLTHROUGH;
+	case PPL_STATUS_PATH_TERMINATE:
+		return PPL_STATUS_PATH_STOP;
+	default:
 		return err;
+	}
 
 	if (err == PPL_STATUS_PATH_STOP) {
 		current->pipeline->trigger.aborted = true;
@@ -424,7 +443,7 @@ int pipeline_trigger_run(struct pipeline *p, struct comp_dev *host, int cmd)
 		list_init(&walk_ctx.pipelines);
 
 		if (data.delay_ms)
-			wait_delay_ms(data.delay_ms);
+			k_msleep(data.delay_ms);
 
 		ret = walk_ctx.comp_func(host, NULL, &walk_ctx, host->direction);
 		if (ret < 0)
@@ -448,51 +467,25 @@ out:
 	return ret;
 }
 
-/* Walk the graph to active components in any pipeline to find
- * the first active DAI and return it's timestamp.
- */
-static int pipeline_comp_timestamp(struct comp_dev *current,
-				   struct comp_buffer *calling_buf,
-				   struct pipeline_walk_context *ctx, int dir)
-{
-	struct pipeline_data *ppl_data = ctx->comp_data;
-
-	if (!comp_is_active(current)) {
-		comp_warn(current, "pipeline_comp_timestamp(), current in wrong state %u",
-			  current->state);
-		return 0;
-	}
-
-	/* is component a DAI endpoint? */
-	if (current != ppl_data->start &&
-	    (dev_comp_type(current) == SOF_COMP_DAI ||
-	    dev_comp_type(current) == SOF_COMP_SG_DAI)) {
-		platform_dai_timestamp(current, ppl_data->posn);
-		return PPL_STATUS_PATH_STOP;
-	}
-
-	return pipeline_for_each_comp(current, ctx, dir);
-}
-
 /* Get the timestamps for host and first active DAI found. */
 void pipeline_get_timestamp(struct pipeline *p, struct comp_dev *host,
 			    struct sof_ipc_stream_posn *posn)
 {
-	struct pipeline_data data;
-	struct pipeline_walk_context walk_ctx = {
-		.comp_func = pipeline_comp_timestamp,
-		.comp_data = &data,
-		.skip_incomplete = true,
-	};
+	struct comp_dev *dai;
 
 	platform_host_timestamp(host, posn);
 
-	data.start = host;
-	data.posn = posn;
+	if (host->direction == SOF_IPC_STREAM_PLAYBACK)
+		dai = pipeline_get_dai_comp(host->pipeline->pipeline_id, PPL_DIR_DOWNSTREAM);
+	else
+		dai = pipeline_get_dai_comp(host->pipeline->pipeline_id, PPL_DIR_UPSTREAM);
 
-	if (walk_ctx.comp_func(host, NULL, &walk_ctx, host->direction) !=
-	    PPL_STATUS_PATH_STOP)
+	if (!dai) {
 		pipe_dbg(p, "pipeline_get_timestamp(): DAI position update failed");
+		return;
+	}
+
+	platform_dai_timestamp(dai, posn);
 
 	/* set timestamp resolution */
 	posn->timestamp_ns = p->period * 1000;

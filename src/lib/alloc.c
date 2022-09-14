@@ -6,16 +6,16 @@
 //         Keyon Jie <yang.jie@linux.intel.com>
 
 #include <sof/debug/panic.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/cache.h>
+#include <rtos/alloc.h>
+#include <rtos/cache.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/dma.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/mm_heap.h>
 #include <sof/lib/uuid.h>
 #include <sof/math/numbers.h>
-#include <sof/spinlock.h>
-#include <sof/string.h>
+#include <rtos/spinlock.h>
+#include <rtos/string.h>
 #include <ipc/topology.h>
 #include <ipc/trace.h>
 
@@ -23,6 +23,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(memory, CONFIG_SOF_LOG_LEVEL);
 
 /* 425d6e68-145c-4455-b0b2-c7260b0600a5 */
 DECLARE_SOF_UUID("memory", mem_uuid, 0x425d6e68, 0x145c, 0x4455,
@@ -565,18 +567,18 @@ void heap_trace(struct mm_heap *heap, int size)
 		tr_info(&mem_tr, " heap: 0x%x size %d blocks %d caps 0x%x",
 			heap->heap, heap->size, heap->blocks,
 			heap->caps);
-		tr_info(&mem_tr, "  used %d free %d", heap->info.used,
+		tr_info(&mem_tr, "  (In Bytes) used %d free %d", heap->info.used,
 			heap->info.free);
 
 		/* map[j]'s base is calculated based on map[j-1] */
 		for (j = 0; j < heap->blocks; j++) {
 			current_map = &heap->map[j];
 
-			tr_info(&mem_tr, "  block %d base 0x%x size %d",
-				j, current_map->base,
-				current_map->block_size);
-			tr_info(&mem_tr, "   count %d free %d",
+			tr_info(&mem_tr, " %d Bytes blocks ID:%d base 0x%x",
+				current_map->block_size, j, current_map->base);
+			tr_info(&mem_tr, "   Number of Blocks: total %d used %d free %d",
 				current_map->count,
+				(current_map->count - current_map->free_count),
 				current_map->free_count);
 		}
 

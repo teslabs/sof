@@ -8,13 +8,13 @@
 #include <sof/common.h>
 #include <platform/chip_offset_byte.h>
 #include <platform/chip_registers.h>
-#include <sof/drivers/interrupt.h>
+#include <rtos/interrupt.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/io.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/uuid.h>
 #include <sof/list.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <xtensa/hal.h>
 #include <xtensa/config/core.h>
 #include <xtensa/config/specreg.h>

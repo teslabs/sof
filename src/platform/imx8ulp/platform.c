@@ -7,13 +7,13 @@
 #include <sof/compiler_info.h>
 #include <sof/debug/debug.h>
 #include <sof/drivers/edma.h>
-#include <sof/drivers/interrupt.h>
+#include <rtos/interrupt.h>
 #include <sof/ipc/driver.h>
 #include <sof/drivers/mu.h>
-#include <sof/drivers/timer.h>
+#include <rtos/timer.h>
 #include <sof/fw-ready-metadata.h>
 #include <sof/lib/agent.h>
-#include <sof/lib/clk.h>
+#include <rtos/clk.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/dai.h>
 #include <sof/lib/dma.h>
@@ -207,3 +207,10 @@ int platform_context_save(struct sof *sof)
 {
 	return 0;
 }
+
+#ifndef __ZEPHYR__
+void platform_wait_for_interrupt(int level)
+{
+	arch_wait_for_interrupt(level);
+}
+#endif

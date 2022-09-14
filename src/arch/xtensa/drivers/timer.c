@@ -4,8 +4,8 @@
 //
 // Author: Liam Girdwood <liam.r.girdwood@linux.intel.com>
 
-#include <sof/drivers/interrupt.h>
-#include <sof/drivers/timer.h>
+#include <rtos/interrupt.h>
+#include <rtos/timer.h>
 #include <sof/lib/memory.h>
 #include <xtensa/config/core-isa.h>
 #include <xtensa/hal.h>

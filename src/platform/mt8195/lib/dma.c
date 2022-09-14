@@ -5,11 +5,11 @@
 // Author: YC Hung <yc.hung@mediatek.com>
 
 #include <sof/common.h>
-#include <sof/drivers/interrupt.h>
+#include <rtos/interrupt.h>
 #include <sof/lib/dma.h>
 #include <sof/lib/memory.h>
 #include <sof/sof.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 
 #include <mt8195-afe-regs.h>
 #include <mt8195-afe-common.h>

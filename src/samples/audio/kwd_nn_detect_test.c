@@ -5,12 +5,13 @@
 // Author: Cristina Feies <cristina.ilie@nxp.com>
 // Author: Viorel Suman <viorel.suman@nxp.com>
 
+#include <sof/compiler_attributes.h>
 #include <sof/samples/audio/kwd_nn_detect_test.h>
 #include <sof/samples/audio/kwd_nn/kwd_nn_preprocess.h>
 #include <sof/samples/audio/kwd_nn/kwd_nn_process.h>
 #include <sof/samples/audio/detect_test.h>
 #include <sof/audio/component.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <stdint.h>
 
 static __aligned(64) uint8_t preprocessed_data[KWD_NN_CONFIG_PREPROCESSED_SIZE];
@@ -34,7 +35,7 @@ static int kwd_nn_detect_postprocess(uint8_t confidences[KWD_NN_CONFIDENCES_SIZE
 }
 
 void kwd_nn_detect_test(struct comp_dev *dev,
-			const struct audio_stream *source,
+			const struct audio_stream __sparse_cache *source,
 			uint32_t frames)
 {
 	void *src;
@@ -77,11 +78,11 @@ void kwd_nn_detect_test(struct comp_dev *dev,
 				 test_keyword_get_input_byte(dev, 6),
 				 test_keyword_get_input_byte(dev, 7)
 			);
-			time_start = k_cycle_get_64();
+			time_start = sof_cycle_get_64();
 			kwd_nn_preprocess_1s(test_keyword_get_input(dev), preprocessed_data);
 			kwd_nn_process_data(preprocessed_data, confidences);
 			result = kwd_nn_detect_postprocess(confidences);
-			time_stop = k_cycle_get_64();
+			time_stop = sof_cycle_get_64();
 			comp_dbg(dev,
 				 "KWD: kwd_nn_detect_test_copy() inference done in %u ms",
 				 (unsigned int)k_cyc_to_ms_near64(time_stop - time_start));

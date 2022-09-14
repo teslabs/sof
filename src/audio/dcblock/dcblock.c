@@ -13,12 +13,12 @@
 #include <sof/common.h>
 #include <sof/debug/panic.h>
 #include <sof/ipc/msg.h>
-#include <sof/lib/alloc.h>
+#include <rtos/alloc.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/uuid.h>
 #include <sof/list.h>
 #include <sof/platform.h>
-#include <sof/string.h>
+#include <rtos/string.h>
 #include <sof/ut.h>
 #include <sof/trace/trace.h>
 #include <ipc/control.h>
@@ -30,6 +30,8 @@
 #include <stdint.h>
 
 static const struct comp_driver comp_dcblock;
+
+LOG_MODULE_REGISTER(dcblock, CONFIG_SOF_LOG_LEVEL);
 
 /* b809efaf-5681-42b1-9ed6-04bb012dd384 */
 DECLARE_SOF_RT_UUID("dcblock", dcblock_uuid, 0xb809efaf, 0x5681, 0x42b1,
@@ -264,8 +266,8 @@ static int dcblock_trigger(struct comp_dev *dev, int cmd)
 	return comp_set_state(dev, cmd);
 }
 
-static void dcblock_process(struct comp_dev *dev, struct comp_buffer *source,
-			    struct comp_buffer *sink, int frames,
+static void dcblock_process(struct comp_dev *dev, struct comp_buffer __sparse_cache *source,
+			    struct comp_buffer __sparse_cache *sink, int frames,
 			    uint32_t source_bytes, uint32_t sink_bytes)
 {
 	struct comp_data *cd = comp_get_drvdata(dev);
@@ -289,8 +291,8 @@ static void dcblock_process(struct comp_dev *dev, struct comp_buffer *source,
 static int dcblock_copy(struct comp_dev *dev)
 {
 	struct comp_copy_limits cl;
-	struct comp_buffer *sourceb;
-	struct comp_buffer *sinkb;
+	struct comp_buffer *sourceb, *sinkb;
+	struct comp_buffer __sparse_cache *source_c, *sink_c;
 
 	comp_dbg(dev, "dcblock_copy()");
 
@@ -299,11 +301,17 @@ static int dcblock_copy(struct comp_dev *dev)
 	sinkb = list_first_item(&dev->bsink_list, struct comp_buffer,
 				source_list);
 
-	/* Get source, sink, number of frames etc. to process. */
-	comp_get_copy_limits_with_lock(sourceb, sinkb, &cl);
+	source_c = buffer_acquire(sourceb);
+	sink_c = buffer_acquire(sinkb);
 
-	dcblock_process(dev, sourceb, sinkb,
+	/* Get source, sink, number of frames etc. to process. */
+	comp_get_copy_limits(source_c, sink_c, &cl);
+
+	dcblock_process(dev, source_c, sink_c,
 			cl.frames, cl.source_bytes, cl.sink_bytes);
+
+	buffer_release(sink_c);
+	buffer_release(source_c);
 
 	return 0;
 }
@@ -316,8 +324,8 @@ static int dcblock_copy(struct comp_dev *dev)
 static int dcblock_prepare(struct comp_dev *dev)
 {
 	struct comp_data *cd = comp_get_drvdata(dev);
-	struct comp_buffer *sourceb;
-	struct comp_buffer *sinkb;
+	struct comp_buffer *sourceb, *sinkb;
+	struct comp_buffer __sparse_cache *source_c, *sink_c;
 	uint32_t sink_period_bytes;
 	int ret;
 
@@ -336,19 +344,21 @@ static int dcblock_prepare(struct comp_dev *dev)
 	sinkb = list_first_item(&dev->bsink_list,
 				struct comp_buffer, source_list);
 
+	source_c = buffer_acquire(sourceb);
+	sink_c = buffer_acquire(sinkb);
+
 	/* get source data format */
-	cd->source_format = sourceb->stream.frame_fmt;
+	cd->source_format = source_c->stream.frame_fmt;
 
 	/* get sink data format and period bytes */
-	cd->sink_format = sinkb->stream.frame_fmt;
-	sink_period_bytes =
-			audio_stream_period_bytes(&sinkb->stream, dev->frames);
+	cd->sink_format = sink_c->stream.frame_fmt;
+	sink_period_bytes = audio_stream_period_bytes(&sink_c->stream, dev->frames);
 
-	if (sinkb->stream.size < sink_period_bytes) {
+	if (sink_c->stream.size < sink_period_bytes) {
 		comp_err(dev, "dcblock_prepare(): sink buffer size %d is insufficient < %d",
-			 sinkb->stream.size, sink_period_bytes);
+			 sink_c->stream.size, sink_period_bytes);
 		ret = -ENOMEM;
-		goto err;
+		goto out;
 	}
 
 	dcblock_init_state(cd);
@@ -357,16 +367,19 @@ static int dcblock_prepare(struct comp_dev *dev)
 	if (!cd->dcblock_func) {
 		comp_err(dev, "dcblock_prepare(), No processing function matching frames format");
 		ret = -EINVAL;
-		goto err;
+		goto out;
 	}
 
 	comp_info(dev, "dcblock_prepare(), source_format=%d, sink_format=%d",
 		  cd->source_format, cd->sink_format);
 
-	return 0;
+out:
+	if (ret < 0)
+		comp_set_state(dev, COMP_TRIGGER_RESET);
 
-err:
-	comp_set_state(dev, COMP_TRIGGER_RESET);
+	buffer_release(sink_c);
+	buffer_release(source_c);
+
 	return ret;
 }
 
@@ -382,6 +395,9 @@ static int dcblock_reset(struct comp_dev *dev)
 	comp_info(dev, "dcblock_reset()");
 
 	dcblock_init_state(cd);
+
+	cd->dcblock_func = NULL;
+
 	comp_set_state(dev, COMP_TRIGGER_RESET);
 
 	return 0;

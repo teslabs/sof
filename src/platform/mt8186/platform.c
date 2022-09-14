@@ -8,12 +8,12 @@
 #include <sof/compiler_info.h>
 #include <sof/debug/debug.h>
 #include <sof/drivers/edma.h>
-#include <sof/drivers/interrupt.h>
+#include <rtos/interrupt.h>
 #include <sof/ipc/msg.h>
-#include <sof/drivers/timer.h>
+#include <rtos/timer.h>
 #include <sof/fw-ready-metadata.h>
 #include <sof/lib/agent.h>
-#include <sof/lib/clk.h>
+#include <rtos/clk.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/dai.h>
 #include <sof/lib/dma.h>
@@ -137,10 +137,10 @@ static SHARED_DATA struct timer timer_shared = {
 const struct xthal_MPU_entry __xt_mpu_init_table[] __section(".ResetVector.text") = {
 	XTHAL_MPU_ENTRY(0x00000000, 1, XTHAL_AR_RWXrwx, XTHAL_MEM_DEVICE),		// unused
 	XTHAL_MPU_ENTRY(0x4e100000, 1, XTHAL_AR_RWXrwx, XTHAL_MEM_WRITEBACK),		// sram
-	XTHAL_MPU_ENTRY(0x4e200000, 1, XTHAL_AR_NONE, XTHAL_MEM_DEVICE),		// unused
+	XTHAL_MPU_ENTRY(0x4e180000, 1, XTHAL_AR_NONE, XTHAL_MEM_DEVICE),		// unused
 	XTHAL_MPU_ENTRY(0x60000000, 1, XTHAL_AR_RWXrwx, XTHAL_MEM_WRITEBACK),		// dram
 	XTHAL_MPU_ENTRY(0x60500000, 1, XTHAL_AR_RWXrwx, XTHAL_MEM_NON_CACHEABLE),	// dram
-	XTHAL_MPU_ENTRY(0x70000000, 1, XTHAL_AR_NONE, XTHAL_MEM_DEVICE),		// unused
+	XTHAL_MPU_ENTRY(0x61100000, 1, XTHAL_AR_NONE, XTHAL_MEM_DEVICE),		// unused
 };
 
 const unsigned int __xt_mpu_init_table_size __section(".ResetVector.text") =
@@ -216,3 +216,9 @@ int platform_context_save(struct sof *sof)
 {
 	return 0;
 }
+
+void platform_wait_for_interrupt(int level)
+{
+	arch_wait_for_interrupt(level);
+}
+

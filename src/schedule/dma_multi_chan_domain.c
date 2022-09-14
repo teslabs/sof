@@ -5,10 +5,10 @@
 // Author: Tomasz Lauda <tomasz.lauda@linux.intel.com>
 
 #include <sof/audio/component.h>
-#include <sof/bit.h>
-#include <sof/drivers/interrupt.h>
-#include <sof/drivers/timer.h>
-#include <sof/lib/alloc.h>
+#include <rtos/bit.h>
+#include <rtos/interrupt.h>
+#include <rtos/timer.h>
+#include <rtos/alloc.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/dma.h>
 #include <sof/lib/memory.h>
@@ -22,6 +22,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+LOG_MODULE_DECLARE(ll_schedule, CONFIG_SOF_LOG_LEVEL);
 
 /* For i.MX, when building SOF with Zephyr, we use wrapper.c,
  * interrupt.c and interrupt-irqsteer.c which causes name
@@ -147,7 +149,7 @@ static int dma_multi_chan_domain_register(struct ll_schedule_domain *domain,
 			if (dma_domain->channel_mask[i][core] & BIT(j))
 				continue;
 
-			dma_interrupt(&dmas[i].chan[j], DMA_IRQ_CLEAR);
+			dma_interrupt_legacy(&dmas[i].chan[j], DMA_IRQ_CLEAR);
 
 			/* register only if not aggregated or not registered */
 			if (!dma_domain->aggregated_irq ||
@@ -169,7 +171,7 @@ static int dma_multi_chan_domain_register(struct ll_schedule_domain *domain,
 			interrupt_clear_mask(dma_domain->data[i][j].irq,
 					     BIT(j));
 
-			dma_interrupt(&dmas[i].chan[j], DMA_IRQ_UNMASK);
+			dma_interrupt_legacy(&dmas[i].chan[j], DMA_IRQ_UNMASK);
 
 			dma_domain->data[i][j].task = pipe_task;
 			dma_domain->channel_mask[i][core] |= BIT(j);
@@ -237,8 +239,8 @@ static int dma_multi_chan_domain_unregister(struct ll_schedule_domain *domain,
 			if (!(dma_domain->channel_mask[i][core] & BIT(j)))
 				continue;
 
-			dma_interrupt(&dmas[i].chan[j], DMA_IRQ_MASK);
-			dma_interrupt(&dmas[i].chan[j], DMA_IRQ_CLEAR);
+			dma_interrupt_legacy(&dmas[i].chan[j], DMA_IRQ_MASK);
+			dma_interrupt_legacy(&dmas[i].chan[j], DMA_IRQ_CLEAR);
 			interrupt_clear_mask(dma_domain->data[i][j].irq,
 					     BIT(j));
 
@@ -280,8 +282,8 @@ static bool dma_multi_chan_domain_is_pending(struct ll_schedule_domain *domain,
 	for (i = 0; i < dma_domain->num_dma; ++i) {
 		for (j = 0; j < dmas[i].plat_data.channels; ++j) {
 			if (!*comp) {
-				status = dma_interrupt(&dmas[i].chan[j],
-						       DMA_IRQ_STATUS_GET);
+				status = dma_interrupt_legacy(&dmas[i].chan[j],
+							      DMA_IRQ_STATUS_GET);
 				if (!status)
 					continue;
 
@@ -316,7 +318,7 @@ static bool dma_multi_chan_domain_is_pending(struct ll_schedule_domain *domain,
 				/* it's too soon for this task */
 				if (!pipe_task->registrable &&
 				    pipe_task->task.start >
-				    k_cycle_get_64_atomic())
+				    sof_cycle_get_64_atomic())
 					continue;
 			}
 
@@ -327,7 +329,7 @@ static bool dma_multi_chan_domain_is_pending(struct ll_schedule_domain *domain,
 
 			/* clear interrupt */
 			if (pipe_task->registrable) {
-				dma_interrupt(&dmas[i].chan[j], DMA_IRQ_CLEAR);
+				dma_interrupt_legacy(&dmas[i].chan[j], DMA_IRQ_CLEAR);
 				interrupt_clear_mask(dma_domain->data[i][j].irq,
 						     BIT(j));
 			}

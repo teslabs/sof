@@ -7,19 +7,21 @@
 #include <sof/audio/component_ext.h>
 #include <sof/common.h>
 #include <sof/debug/panic.h>
-#include <sof/drivers/interrupt.h>
+#include <rtos/interrupt.h>
 #include <sof/ipc/msg.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/cache.h>
+#include <rtos/alloc.h>
+#include <rtos/cache.h>
 #include <sof/lib/memory.h>
 #include <sof/list.h>
 #include <sof/sof.h>
-#include <sof/string.h>
+#include <rtos/string.h>
 #include <ipc/topology.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(component, CONFIG_SOF_LOG_LEVEL);
 
 static SHARED_DATA struct comp_driver_list cd;
 
@@ -134,8 +136,6 @@ int comp_set_state(struct comp_dev *dev, int cmd)
 
 	dev->state = requested_state;
 
-	comp_writeback(dev);
-
 	return 0;
 }
 
@@ -147,7 +147,8 @@ void sys_comp_init(struct sof *sof)
 	k_spinlock_init(&sof->comp_drivers->lock);
 }
 
-void comp_get_copy_limits(struct comp_buffer *source, struct comp_buffer *sink,
+void comp_get_copy_limits(struct comp_buffer __sparse_cache *source,
+			  struct comp_buffer __sparse_cache *sink,
 			  struct comp_copy_limits *cl)
 {
 	cl->frames = audio_stream_avail_frames(&source->stream, &sink->stream);
@@ -157,47 +158,19 @@ void comp_get_copy_limits(struct comp_buffer *source, struct comp_buffer *sink,
 	cl->sink_bytes = cl->frames * cl->sink_frame_bytes;
 }
 
-struct comp_dev *comp_make_shared(struct comp_dev *dev)
+void comp_get_copy_limits_frame_aligned(const struct comp_buffer __sparse_cache *source,
+					const struct comp_buffer __sparse_cache *sink,
+					struct comp_copy_limits *cl)
 {
-	struct list_item *old_bsource_list = &dev->bsource_list;
-	struct list_item *old_bsink_list = &dev->bsink_list;
-	struct list_item *buffer_list, *clist;
-	struct comp_buffer *buffer;
-	int dir;
-
-	/* flush cache to share */
-	dcache_writeback_region(dev, dev->size);
-
-	dev = platform_shared_get(dev, dev->size);
-
-	/* re-link lists with the new heads addresses, init would cut
-	 * links to existing items, local already connected buffers
-	 */
-	list_relink(&dev->bsource_list, old_bsource_list);
-	list_relink(&dev->bsink_list, old_bsink_list);
-	dev->is_shared = true;
-
-	/* re-link all buffers which are already connected to this
-	 * component
-	 */
-	for (dir = 0; dir <= PPL_CONN_DIR_BUFFER_TO_COMP; dir++) {
-		buffer_list = comp_buffer_list(dev, dir);
-
-		if (list_is_empty(buffer_list))
-			continue;
-
-		list_for_item(clist, buffer_list) {
-			buffer = buffer_from_list(clist, struct comp_buffer, dir);
-
-			buffer_set_comp(buffer, dev, dir);
-		}
-	}
-
-	return dev;
+	cl->frames = audio_stream_avail_frames_aligned(&source->stream, &sink->stream);
+	cl->source_frame_bytes = audio_stream_frame_bytes(&source->stream);
+	cl->sink_frame_bytes = audio_stream_frame_bytes(&sink->stream);
+	cl->source_bytes = cl->frames * cl->source_frame_bytes;
+	cl->sink_bytes = cl->frames * cl->sink_frame_bytes;
 }
 
-int audio_stream_copy(const struct audio_stream *source, uint32_t ioffset,
-		      struct audio_stream *sink, uint32_t ooffset, uint32_t samples)
+int audio_stream_copy(const struct audio_stream __sparse_cache *source, uint32_t ioffset,
+		      struct audio_stream __sparse_cache *sink, uint32_t ooffset, uint32_t samples)
 {
 	int ssize = audio_stream_sample_bytes(source); /* src fmt == sink fmt */
 	uint8_t *src = audio_stream_wrap(source, (uint8_t *)source->r_ptr + ioffset * ssize);
@@ -221,8 +194,9 @@ int audio_stream_copy(const struct audio_stream *source, uint32_t ioffset,
 	return samples;
 }
 
-void audio_stream_copy_from_linear(void *linear_source, int ioffset,
-				   struct audio_stream *sink, int ooffset, unsigned int samples)
+void audio_stream_copy_from_linear(const void *linear_source, int ioffset,
+				   struct audio_stream __sparse_cache *sink, int ooffset,
+				   unsigned int samples)
 {
 	int ssize = audio_stream_sample_bytes(sink); /* src fmt == sink fmt */
 	uint8_t *src = (uint8_t *)linear_source + ioffset * ssize;
@@ -241,7 +215,7 @@ void audio_stream_copy_from_linear(void *linear_source, int ioffset,
 	}
 }
 
-void audio_stream_copy_to_linear(struct audio_stream *source, int ioffset,
+void audio_stream_copy_to_linear(const struct audio_stream __sparse_cache *source, int ioffset,
 				 void *linear_sink, int ooffset, unsigned int samples)
 {
 	int ssize = audio_stream_sample_bytes(source); /* src fmt == sink fmt */

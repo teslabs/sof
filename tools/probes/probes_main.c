@@ -31,13 +31,14 @@
 #define APP_NAME "sof-probes"
 
 #define PACKET_MAX_SIZE	4096	/**< Size limit for probe data packet */
-#define DATA_READ_LIMIT 1024	/**< Data limit for file read */
+#define DATA_READ_LIMIT 4096	/**< Data limit for file read */
 #define FILES_LIMIT	32	/**< Maximum num of probe output files */
 #define FILE_PATH_LIMIT 128	/**< Path limit for probe output files */
 
 struct wave_files {
 	FILE *fd;
 	uint32_t buffer_id;
+	uint32_t fmt;
 	uint32_t size;
 	struct wave header;
 };
@@ -83,27 +84,43 @@ int get_buffer_file(struct wave_files *files, uint32_t buffer_id)
 	int i;
 
 	for (i = 0; i < FILES_LIMIT; i++) {
-		if (files[i].buffer_id == buffer_id)
+		if (files[i].fd != NULL && files[i].buffer_id == buffer_id)
 			return i;
 	}
 	return -1;
 }
 
+int get_buffer_file_free(struct wave_files *files)
+{
+	int i;
+
+	for (i = 0; i < FILES_LIMIT; i++) {
+		if (files[i].fd == NULL)
+			return i;
+	}
+	return -1;
+}
+
+bool is_audio_format(uint32_t format)
+{
+	return (format & PROBE_MASK_FMT_TYPE) != 0 && (format & PROBE_MASK_AUDIO_FMT) == 0;
+}
+
 int init_wave(struct wave_files *files, uint32_t buffer_id, uint32_t format)
 {
+	bool audio = is_audio_format(format);
 	char path[FILE_PATH_LIMIT];
 	int i;
 
-	i = get_buffer_file(files, 0);
+	i = get_buffer_file_free(files);
 	if (i == -1) {
 		fprintf(stderr, "error: too many buffers\n");
 		exit(0);
 	}
 
-	fprintf(stdout, "%s:\t Creating wave file for buffer id: %d\n",
-		APP_NAME, buffer_id);
+	sprintf(path, "buffer_%d.%s", buffer_id, audio ? "wav" : "bin");
 
-	sprintf(path, "buffer_%d.wav", buffer_id);
+	fprintf(stdout, "%s:\t Creating file %s\n", APP_NAME, path);
 
 	files[i].fd = fopen(path, "wb");
 	if (!files[i].fd) {
@@ -113,6 +130,10 @@ int init_wave(struct wave_files *files, uint32_t buffer_id, uint32_t format)
 	}
 
 	files[i].buffer_id = buffer_id;
+	files[i].fmt = format;
+
+	if (!audio)
+		return i;
 
 	files[i].header.riff.chunk_id = HEADER_RIFF;
 	files[i].header.riff.format = HEADER_WAVE;
@@ -142,6 +163,9 @@ void finalize_wave_files(struct wave_files *files)
 	/* and close all opened files */
 	/* check wave struct to understand the offsets */
 	for (i = 0; i < FILES_LIMIT; i++) {
+		if (!is_audio_format(files[i].fmt))
+			continue;
+
 		if (files[i].fd) {
 			chunk_size = files[i].size + sizeof(struct wave) -
 				     offsetof(struct riff_chunk, format);
@@ -176,13 +200,13 @@ int validate_data_packet(struct probe_data_packet *data_packet)
 	}
 }
 
-int process_sync(struct probe_data_packet *packet, uint32_t **w_ptr, uint32_t *total_data_to_copy)
+int process_sync(struct probe_data_packet *packet, uint8_t **w_ptr, uint32_t *total_data_to_copy)
 {
 	struct probe_data_packet *temp_packet;
 
 	/* request to copy data_size from probe packet */
-	*total_data_to_copy = packet->data_size_bytes /
-					 sizeof(uint32_t);
+	*total_data_to_copy = packet->data_size_bytes;
+
 	if (packet->data_size_bytes > PACKET_MAX_SIZE) {
 		temp_packet = realloc(packet,
 				      sizeof(struct probe_data_packet) + packet->data_size_bytes);
@@ -190,8 +214,19 @@ int process_sync(struct probe_data_packet *packet, uint32_t **w_ptr, uint32_t *t
 			return -ENOMEM;
 	}
 
-	*w_ptr = (uint32_t *)&packet->data;
+	*w_ptr = (uint8_t *)&packet->data;
 	return 0;
+}
+
+static bool sync_word_at(uint8_t *buf, size_t len)
+{
+	if (len < sizeof(uint32_t))
+		return false;
+
+	if (*((uint32_t *)buf) == PROBE_EXTRACT_SYNC_WORD)
+		return true;
+
+	return false;
 }
 
 void parse_data(char *file_in)
@@ -199,10 +234,10 @@ void parse_data(char *file_in)
 	FILE *fd_in;
 	struct wave_files files[FILES_LIMIT];
 	struct probe_data_packet *packet;
-	uint32_t data[DATA_READ_LIMIT];
+	uint8_t data[DATA_READ_LIMIT];
 	uint32_t total_data_to_copy = 0;
 	uint32_t data_to_copy = 0;
-	uint32_t *w_ptr;
+	uint8_t *w_ptr;
 	int i, j, file;
 
 	enum p_state state = READY;
@@ -223,16 +258,17 @@ void parse_data(char *file_in)
 		fclose(fd_in);
 		exit(0);
 	}
-	memset(&data, 0, sizeof(uint32_t) * DATA_READ_LIMIT);
+	memset(&data, 0, DATA_READ_LIMIT);
 	memset(&files, 0, sizeof(struct wave_files) * FILES_LIMIT);
 
 	/* data read loop to process DATA_READ_LIMIT bytes at each iteration */
 	do {
-		i = fread(&data, sizeof(uint32_t), DATA_READ_LIMIT, fd_in);
+		i = fread(&data, 1, DATA_READ_LIMIT, fd_in);
+
 		/* processing all loaded bytes */
 		for (j = 0; j < i; j++) {
-			/* SYNC received */
-			if (data[j] == PROBE_EXTRACT_SYNC_WORD) {
+			/* check for SYNC */
+			if (sync_word_at(&data[j], i - j)) {
 				if (state != READY) {
 					fprintf(stderr, "error: wrong state %d, err %d\n",
 						state, errno);
@@ -241,9 +277,8 @@ void parse_data(char *file_in)
 				}
 				memset(packet, 0, PACKET_MAX_SIZE);
 				/* request to copy full data packet */
-				total_data_to_copy = sizeof(struct probe_data_packet) /
-					sizeof(uint32_t);
-				w_ptr = (uint32_t *)packet;
+				total_data_to_copy = sizeof(struct probe_data_packet);
+				w_ptr = (uint8_t *)packet;
 				state = SYNC;
 			}
 			/* data copying section */
@@ -257,7 +292,7 @@ void parse_data(char *file_in)
 					data_to_copy = total_data_to_copy;
 					total_data_to_copy = 0;
 				}
-				memcpy(w_ptr, data + j, data_to_copy * sizeof(uint32_t));
+				memcpy(w_ptr, data + j, data_to_copy);
 				w_ptr += data_to_copy;
 				j += data_to_copy - 1;
 			}
@@ -286,11 +321,15 @@ void parse_data(char *file_in)
 									 packet->buffer_id,
 									 packet->format);
 
-						fwrite(packet->data,
-						       sizeof(uint32_t),
-						       packet->data_size_bytes /
-						       sizeof(uint32_t),
-						       files[file].fd);
+						if (file < 0) {
+							fprintf(stderr,
+								"unable to open file for %u\n",
+								packet->buffer_id);
+							goto err;
+						}
+
+						fwrite(packet->data, 1,
+						       packet->data_size_bytes, files[file].fd);
 
 						files[file].size += packet->data_size_bytes;
 					}

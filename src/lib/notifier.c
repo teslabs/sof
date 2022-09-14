@@ -7,9 +7,9 @@
 #include <sof/common.h>
 #include <sof/debug/panic.h>
 #include <sof/drivers/idc.h>
-#include <sof/drivers/interrupt.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/cache.h>
+#include <rtos/interrupt.h>
+#include <rtos/alloc.h>
+#include <rtos/cache.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/notifier.h>
@@ -18,6 +18,8 @@
 #include <sof/sof.h>
 #include <ipc/topology.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(notifier, CONFIG_SOF_LOG_LEVEL);
 
 /* 1fb15a7a-83cd-4c2e-8b32-4da1b2adeeaf */
 DECLARE_SOF_UUID("notifier", notifier_uuid, 0x1fb15a7a, 0x83cd, 0x4c2e,
@@ -146,7 +148,7 @@ void notifier_notify_remote(void)
 	struct notify_data *notify_data = notify_data_get() + cpu_get_id();
 
 	if (!list_is_empty(&notify->list[notify_data->type])) {
-		dcache_invalidate_region(notify_data->data,
+		dcache_invalidate_region((__sparse_force void __sparse_cache *)notify_data->data,
 					 notify_data->data_size);
 		notifier_notify(notify_data->caller, notify_data->type,
 				notify_data->data);
@@ -178,8 +180,8 @@ void notifier_event(const void *caller, enum notify_id type, uint32_t core_mask,
 				notify_data->data = data;
 				notify_data->data_size = data_size;
 
-				dcache_writeback_region(notify_data->data,
-							data_size);
+				dcache_writeback_region((__sparse_force void __sparse_cache *)
+							notify_data->data, data_size);
 
 				idc_send_msg(&notify_msg, IDC_NON_BLOCKING);
 			}
@@ -191,7 +193,7 @@ void init_system_notify(struct sof *sof)
 {
 	struct notify **notify = arch_notify_get();
 	int i;
-	*notify = rzalloc(SOF_MEM_ZONE_SYS, 0, SOF_MEM_CAPS_RAM,
+	*notify = rzalloc(SOF_MEM_ZONE_SYS, SOF_MEM_FLAG_COHERENT, SOF_MEM_CAPS_RAM,
 			  sizeof(**notify));
 
 	k_spinlock_init(&(*notify)->lock);

@@ -11,7 +11,7 @@
 #define __CAVS_LIB_MEMORY_H__
 
 #include <sof/common.h>
-#include <sof/lib/cache.h>
+#include <rtos/cache.h>
 #if !defined(__ASSEMBLER__) && !defined(LINKER)
 #include <sof/lib/cpu.h>
 #endif
@@ -88,10 +88,16 @@ struct sof;
 #define SRAM_ALIAS_OFFSET	SRAM_UNCACHED_ALIAS
 
 #if !defined UNIT_TEST
-#define uncache_to_cache(address) \
-	((__typeof__(address))((uint32_t)(address) | SRAM_ALIAS_OFFSET))
-#define cache_to_uncache(address) \
-	((__typeof__(address))((uint32_t)(address) & ~SRAM_ALIAS_OFFSET))
+static inline void __sparse_cache *uncache_to_cache(void *address)
+{
+	return (void __sparse_cache *)((uintptr_t)(address) | SRAM_ALIAS_OFFSET);
+}
+
+static inline void *cache_to_uncache(void __sparse_cache *address)
+{
+	return (void *)((uintptr_t)(address) & ~SRAM_ALIAS_OFFSET);
+}
+
 #define is_uncached(address) \
 	(((uint32_t)(address) & SRAM_ALIAS_MASK) == SRAM_ALIAS_BASE)
 #else
@@ -120,7 +126,7 @@ struct sof;
 static inline void *platform_shared_get(void *ptr, int bytes)
 {
 #if CONFIG_CORE_COUNT > 1 && !defined __ZEPHYR__
-	dcache_invalidate_region(ptr, bytes);
+	dcache_invalidate_region((__sparse_force void __sparse_cache *)ptr, bytes);
 	return cache_to_uncache(ptr);
 #else
 	return ptr;

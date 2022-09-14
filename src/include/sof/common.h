@@ -20,8 +20,7 @@
 /* Treat zero as a special case because it wraps around */
 #define is_power_of_2(x) ((x) && !((x) & ((x) - 1)))
 
-#define compile_check(x) (sizeof(struct{int _f : 1 - !(x); }))
-#define compile_fail_zero_or_false_fn(x) ({int _f[(x) - 1]; 0 & _f[0]; })
+#define compile_check(x) (sizeof(struct { int _f[2 * (x) - 1]; }) != 0)
 
 #define ALIGN_UP_INTERNAL(val, align) (((val) + (align) - 1) & ~((align) - 1))
 
@@ -41,7 +40,7 @@
  * optimizing.
  */
 #define ALIGN_UP_COMPILE(size, alignment)					\
-	(compile_check(is_power_of_2(alignment)) ?		\
+	(compile_check(is_power_of_2(alignment)) ?				\
 	 ALIGN_UP_INTERNAL(size, alignment) : 0xBADCAFE)
 
 #ifdef __XCC__
@@ -52,13 +51,13 @@
  */
 
 #define ALIGN_UP(size, alignment) ({						\
-	if (!is_power_of_2(alignment))					\
+	if (!is_power_of_2(alignment))						\
 		panic(SOF_IPC_PANIC_ASSERT);					\
 	ALIGN_UP_INTERNAL(size, alignment);					\
 })
 
 #define ALIGN_DOWN(size, alignment) ({						\
-	if (!is_power_of_2(alignment))					\
+	if (!is_power_of_2(alignment))						\
 		panic(SOF_IPC_PANIC_ASSERT);					\
 	(size) & ~((alignment) - 1);						\
 })
@@ -70,15 +69,15 @@
 				     is_power_of_2(align))
 
 #define ALIGN_UP(size, alignment) ({						\
-	if (compile_fail_zero_or_false_fn(COMPILE_TIME_ALIGNED(alignment)) ||	\
+	if (!compile_check(COMPILE_TIME_ALIGNED(alignment)) ||			\
 	    !is_power_of_2(alignment))						\
 		panic(SOF_IPC_PANIC_ASSERT);					\
 	ALIGN_UP_INTERNAL(size, alignment);					\
 })
 
 #define ALIGN_DOWN(size, alignment) ({						\
-	if (compile_fail_zero_or_false_fn(COMPILE_TIME_ALIGNED(alignment)) ||	\
-	    !is_power_of_2(alignment))					\
+	if (!compile_check(COMPILE_TIME_ALIGNED(alignment)) ||			\
+	    !is_power_of_2(alignment))						\
 		panic(SOF_IPC_PANIC_ASSERT);					\
 	(size) & ~((alignment) - 1);						\
 })
@@ -114,6 +113,16 @@
 #define container_of(ptr, type, member) \
 	({const typeof(((type *)0)->member)*__memberptr = (ptr); \
 	(type *)((char *)__memberptr - offsetof(type, member)); })
+/*
+ * typeof() doesn't preserve __attribute__((address_space(x))) sparse
+ * annotations, so if an object belongs to such an address space, using the
+ * original form of container_of() will lose that annotation, which then will
+ * lead to sparse "different address spaces" warnings. We need to explicitly
+ * re-inforce the address space onto the new pointer.
+ */
+#define attr_container_of(ptr, type, member, attr) \
+	({const typeof(((type *)0)->member) attr *__memberptr = (ptr); \
+	(type *)((char attr *)__memberptr - offsetof(type, member)); })
 
 #define ffs(i) __builtin_ffs(i)
 #define ffsl(i) __builtin_ffsl(i)
@@ -168,7 +177,11 @@
 #define IS_ENABLED_STEP_3(ignore, value, ...) (!!(value))
 #endif
 
-#if defined __XCC__
+#ifndef __GLIBC_USE
+#define __GLIBC_USE(x) 0
+#endif
+
+#if defined(__XCC__) || defined(__CHECKER__)
 /* XCC does not currently check alignment for packed data so no need for any
  * compiler hints.
  */

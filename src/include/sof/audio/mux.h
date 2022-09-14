@@ -55,14 +55,15 @@ struct mux_stream_data {
 	uint8_t num_channels_deprecated;	/* deprecated in ABI 3.15 */
 	uint8_t mask[PLATFORM_MAX_CHANNELS];
 
-	uint8_t reserved[(20 - PLATFORM_MAX_CHANNELS - 1) % 4]; // padding to ensure proper alignment of following instances
-};
+	uint8_t reserved1[8 - PLATFORM_MAX_CHANNELS]; // padding for extra channels
+	uint8_t reserved2[3]; // padding to ensure proper alignment of following instances
+} __attribute__((packed, aligned(4)));
 
-typedef void(*demux_func)(struct comp_dev *dev, struct audio_stream *sink,
-			  const struct audio_stream *source, uint32_t frames,
+typedef void(*demux_func)(struct comp_dev *dev, struct audio_stream __sparse_cache *sink,
+			  const struct audio_stream __sparse_cache *source, uint32_t frames,
 			  struct mux_look_up *look_up);
-typedef void(*mux_func)(struct comp_dev *dev, struct audio_stream *sink,
-			const struct audio_stream **sources, uint32_t frames,
+typedef void(*mux_func)(struct comp_dev *dev, struct audio_stream __sparse_cache *sink,
+			const struct audio_stream __sparse_cache **sources, uint32_t frames,
 			struct mux_look_up *look_up);
 
 /**
@@ -112,7 +113,7 @@ struct sof_mux_config {
 	uint16_t reserved; // padding to ensure proper alignment
 
 	struct mux_stream_data streams[];
-};
+} __attribute__((packed, aligned(4)));
 
 struct comp_data {
 	union {

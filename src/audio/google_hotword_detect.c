@@ -13,14 +13,14 @@
 #include <sof/common.h>
 #include <sof/debug/panic.h>
 #include <sof/ipc/msg.h>
-#include <sof/lib/alloc.h>
+#include <rtos/alloc.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/notifier.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <sof/lib/uuid.h>
 #include <sof/list.h>
 #include <sof/math/numbers.h>
-#include <sof/string.h>
+#include <rtos/string.h>
 #include <sof/trace/trace.h>
 #include <sof/ut.h>
 #include <ipc/control.h>
@@ -41,6 +41,8 @@
 
 static const struct comp_driver ghd_driver;
 
+LOG_MODULE_REGISTER(google_hotword_detect, CONFIG_SOF_LOG_LEVEL);
+
 /* c3c74249-058e-414f-8240-4da5f3fc2389 */
 DECLARE_SOF_RT_UUID("google-hotword-detect", ghd_uuid,
 		    0xc3c74249, 0x058e, 0x414f,
@@ -52,11 +54,11 @@ struct comp_data {
 	struct kpb_event_data event_data;
 	struct kpb_client client_data;
 
-	struct sof_ipc_comp_event event;
 	struct ipc_msg *msg;
 
 	int detected;
 	size_t history_bytes;
+	struct sof_ipc_comp_event event;
 };
 
 static void notify_host(const struct comp_dev *dev)
@@ -114,7 +116,7 @@ static struct comp_dev *ghd_create(const struct comp_driver *drv,
 	cd->event.event_type = SOF_CTRL_EVENT_KD;
 	cd->event.num_elems = 0;
 
-	cd->msg = ipc_msg_init(cd->event.rhdr.hdr.cmd, sizeof(cd->event));
+	cd->msg = ipc_msg_init(cd->event.rhdr.hdr.cmd, cd->event.rhdr.hdr.size);
 	if (!cd->msg) {
 		comp_err(dev, "ghd_create(): ipc_msg_init failed");
 		goto cd_fail;
@@ -156,6 +158,7 @@ static int ghd_params(struct comp_dev *dev,
 		      struct sof_ipc_stream_params *params)
 {
 	struct comp_buffer *sourceb;
+	struct comp_buffer __sparse_cache *source_c;
 	int ret;
 
 	/* Detector is used only in KPB topology. It always requires channels
@@ -172,23 +175,22 @@ static int ghd_params(struct comp_dev *dev,
 	/* This detector component will only ever have 1 source */
 	sourceb = list_first_item(&dev->bsource_list, struct comp_buffer,
 				  sink_list);
+	source_c = buffer_acquire(sourceb);
 
-	if (sourceb->stream.channels != 1) {
+	if (source_c->stream.channels != 1) {
 		comp_err(dev, "ghd_params(): Only single-channel supported");
-		return -EINVAL;
-	}
-
-	if (sourceb->stream.frame_fmt != SOF_IPC_FRAME_S16_LE) {
+		ret = -EINVAL;
+	} else if (source_c->stream.frame_fmt != SOF_IPC_FRAME_S16_LE) {
 		comp_err(dev, "ghd_params(): Only S16_LE supported");
-		return -EINVAL;
-	}
-
-	if (sourceb->stream.rate != KPB_SAMPLNG_FREQUENCY) {
+		ret = -EINVAL;
+	} else if (source_c->stream.rate != KPB_SAMPLNG_FREQUENCY) {
 		comp_err(dev, "ghd_params(): Only 16KHz supported");
-		return -EINVAL;
+		ret = -EINVAL;
 	}
 
-	return 0;
+	buffer_release(source_c);
+
+	return ret;
 }
 
 static int ghd_setup_model(struct comp_dev *dev)
@@ -380,7 +382,8 @@ static int ghd_copy(struct comp_dev *dev)
 {
 	struct comp_data *cd = comp_get_drvdata(dev);
 	struct comp_buffer *source;
-	struct audio_stream *stream;
+	struct comp_buffer __sparse_cache *source_c;
+	struct audio_stream __sparse_cache *stream;
 	uint32_t bytes, tail_bytes, head_bytes = 0;
 	int ret;
 
@@ -395,11 +398,10 @@ static int ghd_copy(struct comp_dev *dev)
 	/* keyword components will only ever have 1 source */
 	source = list_first_item(&dev->bsource_list,
 				 struct comp_buffer, sink_list);
-	stream = &source->stream;
+	source_c = buffer_acquire(sourceb);
+	stream = &source_c->stream;
 
-	source = buffer_acquire(source);
-	bytes = audio_stream_get_avail_bytes(&source->stream);
-	source = buffer_release(source);
+	bytes = audio_stream_get_avail_bytes(stream);
 
 	comp_dbg(dev, "ghd_copy() avail_bytes %u", bytes);
 	comp_dbg(dev, "buffer begin/r_ptr/end [0x%x 0x%x 0x%x]",
@@ -408,7 +410,7 @@ static int ghd_copy(struct comp_dev *dev)
 		 (uint32_t)stream->end_addr);
 
 	/* copy and perform detection */
-	buffer_stream_invalidate(source, bytes);
+	buffer_stream_invalidate(source_c, bytes);
 
 	tail_bytes = (char *)stream->end_addr - (char *)stream->r_ptr;
 	if (bytes <= tail_bytes)
@@ -422,7 +424,9 @@ static int ghd_copy(struct comp_dev *dev)
 		ghd_detect(dev, stream, stream->addr, head_bytes);
 
 	/* calc new available */
-	comp_update_buffer_consume(source, bytes);
+	comp_update_buffer_consume(source_c, bytes);
+
+	buffer_release(source_c);
 
 	return 0;
 }

@@ -19,19 +19,20 @@
 #include <sof/debug/gdb/gdb.h>
 #include <sof/debug/panic.h>
 #include <sof/drivers/idc.h>
+#include <rtos/interrupt.h>
 #include <sof/ipc/common.h>
 #include <sof/ipc/msg.h>
 #include <sof/ipc/driver.h>
 #include <sof/ipc/schedule.h>
 #include <sof/lib/agent.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/cache.h>
+#include <rtos/alloc.h>
+#include <rtos/cache.h>
 #include <sof/lib/mailbox.h>
 #include <sof/lib/mm_heap.h>
 #include <sof/lib/pm_runtime.h>
 #include <sof/list.h>
 #include <sof/platform.h>
-#include <sof/string.h>
+#include <rtos/string.h>
 #include <sof/trace/dma-trace.h>
 #include <sof/trace/trace.h>
 #include <ipc/control.h>
@@ -51,6 +52,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+LOG_MODULE_DECLARE(ipc, CONFIG_SOF_LOG_LEVEL);
 
 #if CONFIG_CAVS && CAVS_VERSION >= CAVS_VERSION_1_8
 #include <ipc/header-intel-cavs.h>
@@ -87,7 +90,7 @@
 			((struct sof_ipc_cmd_hdr *)tx),			\
 			sizeof(rx))
 
-ipc_cmd_hdr *mailbox_validate(void)
+struct ipc_cmd_hdr *mailbox_validate(void)
 {
 	struct sof_ipc_cmd_hdr *hdr = ipc_get()->comp_data;
 
@@ -219,8 +222,26 @@ static int ipc_stream_pcm_params(uint32_t stream)
 		return -EINVAL;
 	}
 
-	if (IPC_IS_SIZE_INVALID(pcm_params.params)) {
-		IPC_SIZE_ERROR_TRACE(&ipc_tr, pcm_params.params);
+	/* sanity check for pcm_params size */
+	if (pcm_params.hdr.size !=
+	    sizeof(pcm_params) + pcm_params.params.ext_data_length) {
+		tr_err(&ipc_tr, "pcm_params invalid size, hdr.size=%d, ext_data_len=%d",
+		       pcm_params.hdr.size, pcm_params.params.ext_data_length);
+		return -EINVAL;
+	}
+
+	/* sanity check for pcm_params.params size */
+	if (pcm_params.params.hdr.size !=
+	    sizeof(pcm_params.params) + pcm_params.params.ext_data_length) {
+		tr_err(&ipc_tr, "pcm_params.params invalid size, hdr.size=%d, ext_data_len=%d",
+		       pcm_params.params.hdr.size, pcm_params.params.ext_data_length);
+		return -EINVAL;
+	}
+
+	if (sizeof(pcm_params) + pcm_params.params.ext_data_length > SOF_IPC_MSG_MAX_SIZE) {
+		tr_err(&ipc_tr, "pcm_params ext_data_length invalid size %d max allowed %d",
+		       pcm_params.params.ext_data_length,
+		       SOF_IPC_MSG_MAX_SIZE - sizeof(pcm_params));
 		return -EINVAL;
 	}
 
@@ -640,7 +661,7 @@ static int ipc_pm_context_save(uint32_t header)
 	/* TODO: mask ALL platform interrupts except DMA */
 
 	/* mask all DSP interrupts */
-	arch_interrupt_disable_mask(0xffffffff);
+	arch_irq_lock();
 
 	/* TODO: mask ALL platform interrupts inc DMA */
 
@@ -819,7 +840,7 @@ static int ipc_dma_trace_config(uint32_t header)
 		 *  "SOF_IPC_TRACE_DMA_PARAMS_EXT" in your particular
 		 *  kernel version.
 		 */
-		dmat->time_delta = k_ns_to_cyc_near64(params.timestamp_ns) - k_cycle_get_64();
+		dmat->time_delta = k_ns_to_cyc_near64(params.timestamp_ns) - sof_cycle_get_64();
 	else
 		dmat->time_delta = 0;
 
@@ -1504,7 +1525,7 @@ static int ipc_glb_test_message(uint32_t header)
 #endif
 
 #if CONFIG_CAVS && CAVS_VERSION >= CAVS_VERSION_1_8
-static ipc_cmd_hdr *ipc_cavs_read_set_d0ix(ipc_cmd_hdr *hdr)
+static struct ipc_cmd_hdr *ipc_cavs_read_set_d0ix(struct ipc_cmd_hdr *hdr)
 {
 	struct sof_ipc_pm_gate *cmd = ipc_get()->comp_data;
 	uint32_t *chdr = (uint32_t *)hdr;
@@ -1519,10 +1540,10 @@ static ipc_cmd_hdr *ipc_cavs_read_set_d0ix(ipc_cmd_hdr *hdr)
 /*
  * Read a compact IPC message or return NULL for normal message.
  */
-ipc_cmd_hdr *ipc_compact_read_msg(void)
+struct ipc_cmd_hdr *ipc_compact_read_msg(void)
 {
 	uint32_t chdr[2];
-	ipc_cmd_hdr *hdr = (ipc_cmd_hdr *)chdr;
+	struct ipc_cmd_hdr *hdr = (struct ipc_cmd_hdr *)chdr;
 	int words;
 
 	words = ipc_platform_compact_read_msg(hdr, 2);
@@ -1543,7 +1564,7 @@ ipc_cmd_hdr *ipc_compact_read_msg(void)
 #endif
 
 /* prepare the message using ABI major layout */
-ipc_cmd_hdr *ipc_prepare_to_send(const struct ipc_msg *msg)
+struct ipc_cmd_hdr *ipc_prepare_to_send(const struct ipc_msg *msg)
 {
 	static uint32_t hdr[2];
 
@@ -1555,16 +1576,17 @@ ipc_cmd_hdr *ipc_prepare_to_send(const struct ipc_msg *msg)
 	return ipc_to_hdr(hdr);
 }
 
-void ipc_boot_complete_msg(ipc_cmd_hdr *header, uint32_t *data)
+void ipc_boot_complete_msg(struct ipc_cmd_hdr *header, uint32_t data)
 {
-	*header = SOF_IPC_FW_READY;
+	header->dat[0] = SOF_IPC_FW_READY;
+	header->dat[1] = data;
 }
 
 /*
  * Global IPC Operations.
  */
 
-void ipc_cmd(ipc_cmd_hdr *_hdr)
+void ipc_cmd(struct ipc_cmd_hdr *_hdr)
 {
 	struct sof_ipc_cmd_hdr *hdr = ipc_from_hdr(_hdr);
 	struct ipc *ipc = ipc_get();

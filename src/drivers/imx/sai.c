@@ -7,16 +7,18 @@
 // Author: Guido Roncarolo <guido.roncarolo@nxp.com>
 
 #include <sof/audio/component.h>
-#include <sof/bit.h>
+#include <rtos/bit.h>
 #include <sof/drivers/edma.h>
 #include <sof/drivers/sai.h>
 #include <sof/lib/dai.h>
 #include <sof/lib/dma.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <sof/lib/uuid.h>
 #include <ipc/dai.h>
 #include <errno.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(sai, CONFIG_SOF_LOG_LEVEL);
 
 /* 9302adf5-88be-4234-a0a7-dca538ef81f4 */
 DECLARE_SOF_UUID("sai", sai_uuid, 0x9302adf5, 0x88be, 0x4234,
@@ -94,6 +96,38 @@ static void sai_start(struct dai *dai, int direction)
 
 	chan_idx = BIT(0);
 	/* RX3 supports capture on imx8ulp */
+#ifdef CONFIG_IMX8ULP
+	if (direction == DAI_DIR_CAPTURE) {
+		fifo_offset = (dai_fifo(dai, DAI_DIR_CAPTURE) - dai_base(dai) - REG_SAI_RDR0) >> 2;
+		chan_idx = BIT(fifo_offset);
+	} else {
+		fifo_offset = (dai_fifo(dai, DAI_DIR_PLAYBACK) - dai_base(dai) - REG_SAI_TDR0) >> 2;
+		chan_idx = BIT(fifo_offset);
+	}
+#endif
+
+	/* transmit/receive data channel enable */
+	dai_update_bits(dai, REG_SAI_XCR3(direction),
+			REG_SAI_CR3_TRCE_MASK, REG_SAI_CR3_TRCE(chan_idx));
+
+	/* transmitter/receiver enable */
+	dai_update_bits(dai, REG_SAI_XCSR(direction),
+			REG_SAI_CSR_TERE, REG_SAI_CSR_TERE);
+}
+
+static void sai_release(struct dai *dai, int direction)
+{
+	dai_info(dai, "SAI: sai_release");
+
+	int chan_idx = 0;
+#ifdef CONFIG_IMX8ULP
+	int fifo_offset = 0;
+#endif
+	/* enable DMA requests */
+	dai_update_bits(dai, REG_SAI_XCSR(direction),
+			REG_SAI_CSR_FRDE, REG_SAI_CSR_FRDE);
+
+	chan_idx = BIT(0);
 #ifdef CONFIG_IMX8ULP
 	if (direction == DAI_DIR_CAPTURE) {
 		fifo_offset = (dai_fifo(dai, DAI_DIR_CAPTURE) - dai_base(dai) - REG_SAI_RDR0) >> 2;
@@ -337,8 +371,10 @@ static int sai_trigger(struct dai *dai, int cmd, int direction)
 
 	switch (cmd) {
 	case COMP_TRIGGER_START:
-	case COMP_TRIGGER_RELEASE:
 		sai_start(dai, direction);
+		break;
+	case COMP_TRIGGER_RELEASE:
+		sai_release(dai, direction);
 		break;
 	case COMP_TRIGGER_STOP:
 	case COMP_TRIGGER_PAUSE:
@@ -422,6 +458,18 @@ static int sai_get_fifo(struct dai *dai, int direction, int stream_id)
 	}
 }
 
+static int sai_get_fifo_depth(struct dai *dai, int direction)
+{
+	switch (direction) {
+	case DAI_DIR_PLAYBACK:
+	case DAI_DIR_CAPTURE:
+		return dai->plat_data.fifo[direction].depth;
+	default:
+		dai_err(dai, "esai_get_fifo_depth(): Invalid direction");
+		return -EINVAL;
+	}
+}
+
 static int sai_get_hw_params(struct dai *dai,
 			     struct sof_ipc_stream_params *params,
 			     int dir)
@@ -453,6 +501,7 @@ const struct dai_driver sai_driver = {
 		.remove			= sai_remove,
 		.get_handshake		= sai_get_handshake,
 		.get_fifo		= sai_get_fifo,
+		.get_fifo_depth		= sai_get_fifo_depth,
 		.get_hw_params		= sai_get_hw_params,
 	},
 };

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 //
-// Copyright(c) 2019 Intel Corporation. All rights reserved.
+// Copyright(c) 2019-2022 Intel Corporation. All rights reserved.
 //
 // Author: Artur Kloniecki <arturx.kloniecki@linux.intel.com>
 // Author: Adrian Bonislawski <adrian.bonislawski@linux.intel.com>
@@ -10,20 +10,35 @@
 #include <sof/probe/probe.h>
 #include <sof/trace/trace.h>
 #include <user/trace.h>
-#include <sof/lib/alloc.h>
+#include <rtos/alloc.h>
 #include <sof/lib/dma.h>
 #include <sof/lib/notifier.h>
 #include <sof/lib/uuid.h>
 #include <sof/ipc/topology.h>
 #include <sof/ipc/driver.h>
-#include <sof/drivers/timer.h>
+#include <rtos/timer.h>
 #include <sof/schedule/ll_schedule.h>
 #include <sof/schedule/schedule.h>
 #include <sof/schedule/task.h>
+#if CONFIG_IPC_MAJOR_4
+#include <ipc4/gateway.h>
+#include <ipc4/module.h>
+#include <sof/audio/component.h>
+#include <sof/audio/component_ext.h>
+#include <sof/ut.h>
 
+/* 7CAD0808-AB10-CD23-EF45-12AB34CD56EF */
+DECLARE_SOF_RT_UUID("probe", probe_uuid, 0x7CAD0808, 0xAB10, 0xCD23,
+		    0xEF, 0x45, 0x12, 0xAB, 0x34, 0xCD, 0x56, 0xEF);
+
+static const struct comp_driver comp_probe;
+#elif CONFIG_IPC_MAJOR_3
 /* 9d1fb66e-4ffb-497f-994b-17719686596e */
-DECLARE_SOF_UUID("probe", probe_uuid, 0x9d1fb66e, 0x4ffb, 0x497f,
-		 0x99, 0x4b, 0x17, 0x71, 0x96, 0x86, 0x59, 0x6e);
+DECLARE_SOF_RT_UUID("probe", probe_uuid, 0x9d1fb66e, 0x4ffb, 0x497f,
+		    0x99, 0x4b, 0x17, 0x71, 0x96, 0x86, 0x59, 0x6e);
+#else
+#error "No or invalid IPC MAJOR version selected."
+#endif /* CONFIG_IPC_MAJOR_4 */
 
 DECLARE_TR_CTX(pr_tr, SOF_UUID(probe_uuid), LOG_LEVEL_INFO);
 
@@ -31,10 +46,12 @@ DECLARE_TR_CTX(pr_tr, SOF_UUID(probe_uuid), LOG_LEVEL_INFO);
 DECLARE_SOF_UUID("probe-task", probe_task_uuid, 0x2f0b1901, 0xcac0, 0x4b87,
 		 0x81, 0x2f, 0xf2, 0xd5, 0xe4, 0xf1, 0x9e, 0x4a);
 
+LOG_MODULE_REGISTER(probe, CONFIG_SOF_LOG_LEVEL);
+
 #define PROBE_DMA_INVALID	0xFFFFFFFF
 #define PROBE_POINT_INVALID	0xFFFFFFFF
 
-#define PROBE_BUFFER_LOCAL_SIZE		8192
+#define PROBE_BUFFER_LOCAL_SIZE	8192
 #define DMA_ELEM_SIZE		32
 
 /**
@@ -91,7 +108,7 @@ static int probe_dma_buffer_init(struct probe_dma_buf *buffer, uint32_t size,
 	}
 
 	bzero((void *)buffer->addr, size);
-	dcache_writeback_region((void *)buffer->addr, size);
+	dcache_writeback_region((__sparse_force void __sparse_cache *)buffer->addr, size);
 
 	/* initialise the DMA buffer */
 	buffer->size = size;
@@ -113,12 +130,18 @@ static int probe_dma_buffer_init(struct probe_dma_buf *buffer, uint32_t size,
  */
 static int probe_dma_init(struct probe_dma_ext *dma, uint32_t direction)
 {
-	struct dma_sg_config config;
+	struct dma_sg_config config = { 0 };
 	uint32_t elem_addr, addr_align;
 	const uint32_t elem_size = sizeof(uint64_t) * DMA_ELEM_SIZE;
 	const uint32_t elem_num = PROBE_BUFFER_LOCAL_SIZE / elem_size;
+	uint32_t channel;
 	int err = 0;
 
+#if CONFIG_IPC_MAJOR_4
+	channel = ((union ipc4_connector_node_id)dma->stream_tag).f.v_index + 1;
+#else
+	channel = dma->stream_tag;
+#endif
 	/* request DMA in the dir LMEM->HMEM with shared access */
 	dma->dc.dmac = dma_get(direction, 0, DMA_DEV_HOST,
 			       DMA_ACCESS_SHARED);
@@ -138,7 +161,7 @@ static int probe_dma_init(struct probe_dma_ext *dma, uint32_t direction)
 	if (err < 0)
 		return err;
 
-	err = dma_copy_set_stream_tag(&dma->dc, dma->stream_tag);
+	err = dma_copy_set_stream_tag(&dma->dc, channel);
 	if (err < 0)
 		return err;
 
@@ -154,7 +177,7 @@ static int probe_dma_init(struct probe_dma_ext *dma, uint32_t direction)
 	if (err < 0)
 		return err;
 
-	err = dma_set_config(dma->dc.chan, &config);
+	err = dma_set_config_legacy(dma->dc.chan, &config);
 	if (err < 0)
 		return err;
 
@@ -172,13 +195,13 @@ static int probe_dma_deinit(struct probe_dma_ext *dma)
 {
 	int err = 0;
 
-	err = dma_stop(dma->dc.chan);
+	err = dma_stop_legacy(dma->dc.chan);
 	if (err < 0) {
 		tr_err(&pr_tr, "probe_dma_deinit(): dma_stop() failed");
 		return err;
 	}
 
-	dma_channel_put(dma->dc.chan);
+	dma_channel_put_legacy(dma->dc.chan);
 	dma_put(dma->dc.dmac);
 
 	rfree((void *)dma->dmapb.addr);
@@ -198,13 +221,28 @@ static int probe_dma_deinit(struct probe_dma_ext *dma)
 static enum task_state probe_task(void *data)
 {
 	struct probe_pdata *_probe = probe_get();
+	uint32_t copy_align, avail;
 	int err;
 
-	if (_probe->ext_dma.dmapb.avail > 0)
-		err = dma_copy_to_host(&_probe->ext_dma.dc,
-				       &_probe->ext_dma.config, 0,
-				       (void *)_probe->ext_dma.dmapb.r_ptr,
-				       _probe->ext_dma.dmapb.avail);
+	if (!_probe->ext_dma.dmapb.avail)
+		return SOF_TASK_STATE_RESCHEDULE;
+
+	err = dma_get_attribute(_probe->ext_dma.dc.dmac, DMA_ATTR_COPY_ALIGNMENT,
+				&copy_align);
+	if (err < 0) {
+		tr_err(&pr_tr, "probe_task(): dma_get_attribute failed.");
+		return SOF_TASK_STATE_COMPLETED;
+	}
+
+	avail = ALIGN_DOWN(_probe->ext_dma.dmapb.avail, copy_align);
+	if (avail + _probe->ext_dma.dmapb.r_ptr >= _probe->ext_dma.dmapb.end_addr)
+		avail = _probe->ext_dma.dmapb.end_addr - _probe->ext_dma.dmapb.r_ptr;
+
+	if (avail > 0)
+		err = dma_copy_to_host_nowait(&_probe->ext_dma.dc,
+					      &_probe->ext_dma.config, 0,
+					      (void *)_probe->ext_dma.dmapb.r_ptr,
+					      avail);
 	else
 		return SOF_TASK_STATE_RESCHEDULE;
 
@@ -214,8 +252,10 @@ static enum task_state probe_task(void *data)
 	}
 
 	/* buffer data sent, set read pointer and clear avail bytes */
-	_probe->ext_dma.dmapb.r_ptr = _probe->ext_dma.dmapb.w_ptr;
-	_probe->ext_dma.dmapb.avail = 0;
+	_probe->ext_dma.dmapb.r_ptr += avail;
+	if (_probe->ext_dma.dmapb.r_ptr >= _probe->ext_dma.dmapb.end_addr)
+		_probe->ext_dma.dmapb.r_ptr -= _probe->ext_dma.dmapb.size;
+	_probe->ext_dma.dmapb.avail -= avail;
 
 	return SOF_TASK_STATE_RESCHEDULE;
 }
@@ -258,7 +298,7 @@ int probe_init(struct probe_dma *probe_dma)
 			return err;
 		}
 
-		err = dma_start(_probe->ext_dma.dc.chan);
+		err = dma_start_legacy(_probe->ext_dma.dc.chan);
 		if (err < 0) {
 			tr_err(&pr_tr, "probe_init(): failed to start extraction dma");
 
@@ -398,44 +438,6 @@ int probe_dma_add(uint32_t count, struct probe_dma *probe_dma)
 	return 0;
 }
 
-int probe_dma_info(struct sof_ipc_probe_info_params *data, uint32_t max_size)
-{
-	struct probe_pdata *_probe = probe_get();
-	uint32_t i = 0;
-	uint32_t j = 0;
-
-	tr_dbg(&pr_tr, "probe_dma_info()");
-
-	if (!_probe) {
-		tr_err(&pr_tr, "probe_dma_info(): Not initialized.");
-
-		return -EINVAL;
-	}
-
-	data->rhdr.hdr.size = sizeof(*data);
-
-	/* search all injection DMAs to send them in reply */
-	while (i < CONFIG_PROBE_DMA_MAX &&
-	       data->rhdr.hdr.size + sizeof(struct probe_dma) < max_size) {
-		/* save it if valid */
-		if (_probe->inject_dma[i].stream_tag != PROBE_DMA_INVALID) {
-			data->probe_dma[j].stream_tag =
-				_probe->inject_dma[i].stream_tag;
-			data->probe_dma[j].dma_buffer_size =
-				_probe->inject_dma[i].dma_buffer_size;
-			j++;
-			/* and increase reply header size */
-			data->rhdr.hdr.size += sizeof(struct probe_dma);
-		}
-
-		i++;
-	}
-
-	data->num_elems = j;
-
-	return 1;
-}
-
 /**
  * \brief Check if stream_tag is used by probes.
  * \param[in] stream_tag DMA stream tag.
@@ -504,6 +506,10 @@ static int copy_to_pbuffer(struct probe_dma_buf *pbuf, void *data,
 	if (bytes == 0)
 		return 0;
 
+	/* check if there is free room in probe buffer */
+	if (pbuf->size - pbuf->avail < bytes)
+		return -EINVAL;
+
 	/* check if it will not exceed end_addr */
 	if ((char *)pbuf->end_addr - (char *)pbuf->w_ptr < bytes) {
 		head = (char *)pbuf->end_addr - (char *)pbuf->w_ptr;
@@ -518,7 +524,7 @@ static int copy_to_pbuffer(struct probe_dma_buf *pbuf, void *data,
 		tr_err(&pr_tr, "copy_to_pbuffer(): memcpy_s() failed");
 		return -EINVAL;
 	}
-	dcache_writeback_region((void *)pbuf->w_ptr, head);
+	dcache_writeback_region((__sparse_force void __sparse_cache *)pbuf->w_ptr, head);
 
 	/* buffer ended so needs to do a second copy */
 	if (tail) {
@@ -528,7 +534,7 @@ static int copy_to_pbuffer(struct probe_dma_buf *pbuf, void *data,
 			tr_err(&pr_tr, "copy_to_pbuffer(): memcpy_s() failed");
 			return -EINVAL;
 		}
-		dcache_writeback_region((void *)pbuf->w_ptr, tail);
+		dcache_writeback_region((__sparse_force void __sparse_cache *)pbuf->w_ptr, tail);
 		pbuf->w_ptr = pbuf->w_ptr + tail;
 	} else {
 		pbuf->w_ptr = pbuf->w_ptr + head;
@@ -570,7 +576,7 @@ static int copy_from_pbuffer(struct probe_dma_buf *pbuf, void *data,
 	}
 
 	/* data from DMA so invalidate it */
-	dcache_invalidate_region((void *)pbuf->r_ptr, head);
+	dcache_invalidate_region((__sparse_force void __sparse_cache *)pbuf->r_ptr, head);
 	if (memcpy_s(data, bytes, (void *)pbuf->r_ptr, head)) {
 		tr_err(&pr_tr, "copy_from_pbuffer(): memcpy_s() failed");
 		return -EINVAL;
@@ -580,7 +586,7 @@ static int copy_from_pbuffer(struct probe_dma_buf *pbuf, void *data,
 	if (tail) {
 		/* starting from the beginning of the buffer */
 		pbuf->r_ptr = pbuf->addr;
-		dcache_invalidate_region((void *)pbuf->r_ptr, tail);
+		dcache_invalidate_region((__sparse_force void __sparse_cache *)pbuf->r_ptr, tail);
 		if (memcpy_s((char *)data + head, tail, (void *)pbuf->r_ptr, tail)) {
 			tr_err(&pr_tr, "copy_from_pbuffer(): memcpy_s() failed");
 			return -EINVAL;
@@ -599,35 +605,43 @@ static int copy_from_pbuffer(struct probe_dma_buf *pbuf, void *data,
 /**
  * \brief Generate probe data packet header, update timestamp, calc crc
  *	  and copy data to probe buffer.
- * \param[in] buffer component buffer pointer.
+ * \param[in] buffer_id component buffer id
  * \param[in] size data size.
  * \param[in] format audio format.
+ * \param[out] checksum.
  * \return 0 on success, error code otherwise.
  */
-static int probe_gen_header(struct comp_buffer *buffer, uint32_t size,
-			    uint32_t format)
+static int probe_gen_header(uint32_t buffer_id, uint32_t size,
+			    uint32_t format, uint64_t *checksum)
 {
 	struct probe_pdata *_probe = probe_get();
 	struct probe_data_packet *header;
 	uint64_t timestamp;
-	uint32_t crc;
 
 	header = &_probe->header;
-	timestamp = k_cycle_get_64();
+	timestamp = sof_cycle_get_64();
 
 	header->sync_word = PROBE_EXTRACT_SYNC_WORD;
-	header->buffer_id = buffer->id;
+	header->buffer_id = buffer_id;
 	header->format = format;
 	header->timestamp_low = (uint32_t)timestamp;
 	header->timestamp_high = (uint32_t)(timestamp >> 32);
-	header->checksum = 0;
 	header->data_size_bytes = size;
-
+#if CONFIG_IPC_MAJOR_4
+	/* calc checksum to check validation by probe parse app */
+	*checksum = header->sync_word +
+		    header->buffer_id  +
+		    header->format +
+		    header->timestamp_high +
+		    header->timestamp_low +
+		    header->data_size_bytes;
+#else
 	/* calc crc to check validation by probe parse app */
-	crc = crc32(0, header, sizeof(*header));
-	header->checksum = crc;
+	header->checksum = 0;
+	header->checksum = crc32(0, header, sizeof(*header));
+#endif
 
-	dcache_writeback_region(header, sizeof(*header));
+	dcache_writeback_region((__sparse_force void __sparse_cache *)header, sizeof(*header));
 
 	return copy_to_pbuffer(&_probe->ext_dma.dmapb, header,
 			       sizeof(struct probe_data_packet));
@@ -671,6 +685,7 @@ static uint32_t probe_gen_format(uint32_t frame_fmt, uint32_t rate,
 		tr_err(&pr_tr, "probe_gen_format(): Invalid frame format specified = 0x%08x",
 		       frame_fmt);
 		assert(false);
+		return 0;
 	}
 
 	switch (rate) {
@@ -734,6 +749,42 @@ static uint32_t probe_gen_format(uint32_t frame_fmt, uint32_t rate,
 	return format;
 }
 
+/*
+ * Check if more than 75% of buffer is already used,
+ * and if yes, rescheduled the probe task immediately.
+ */
+static void kick_probe_task(struct probe_pdata *_probe)
+{
+	if (_probe->ext_dma.dmapb.size - _probe->ext_dma.dmapb.avail <
+		_probe->ext_dma.dmapb.size >> 2)
+		reschedule_task(&_probe->dmap_work, 0);
+}
+
+#if CONFIG_LOG_BACKEND_SOF_PROBE
+static void probe_logging_hook(uint8_t *buffer, size_t length)
+{
+	struct probe_pdata *_probe = probe_get();
+	uint64_t checksum;
+	int ret;
+
+	ret = probe_gen_header(PROBE_LOGGING_BUFFER_ID, length, 0, &checksum);
+	if (ret < 0)
+		return;
+
+	ret = copy_to_pbuffer(&_probe->ext_dma.dmapb,
+			      buffer, length);
+	if (ret < 0)
+		return;
+#if CONFIG_IPC_MAJOR_4
+	ret = copy_to_pbuffer(&_probe->ext_dma.dmapb,
+			      &checksum, sizeof(checksum));
+	if (ret < 0)
+		return;
+#endif
+	kick_probe_task(_probe);
+}
+#endif
+
 /**
  * \brief General extraction probe callback, called from buffer produce.
  *	  It will search for probe point connected to this buffer.
@@ -748,7 +799,7 @@ static void probe_cb_produce(void *arg, enum notify_id type, void *data)
 {
 	struct probe_pdata *_probe = probe_get();
 	struct buffer_cb_transact *cb_data = data;
-	struct comp_buffer *buffer = cb_data->buffer;
+	struct comp_buffer __sparse_cache *buffer = cb_data->buffer;
 	struct probe_dma_ext *dma;
 	uint32_t buffer_id;
 	uint32_t head, tail;
@@ -757,12 +808,13 @@ static void probe_cb_produce(void *arg, enum notify_id type, void *data)
 	int ret;
 	uint32_t i, j;
 	uint32_t format;
+	uint64_t checksum;
 
-	buffer_id = buffer->id;
+	buffer_id = *(int *)arg;
 
 	/* search for probe point connected to this buffer */
 	for (i = 0; i < CONFIG_PROBE_POINTS_MAX; i++)
-		if (_probe->probe_points[i].buffer_id == buffer_id)
+		if (_probe->probe_points[i].buffer_id.full_id == buffer_id)
 			break;
 
 	if (i == CONFIG_PROBE_POINTS_MAX) {
@@ -775,9 +827,9 @@ static void probe_cb_produce(void *arg, enum notify_id type, void *data)
 		format = probe_gen_format(buffer->stream.frame_fmt,
 					  buffer->stream.rate,
 					  buffer->stream.channels);
-		ret = probe_gen_header(buffer,
+		ret = probe_gen_header(buffer_id,
 				       cb_data->transaction_amount,
-				       format);
+				       format, &checksum);
 		if (ret < 0)
 			goto err;
 
@@ -805,10 +857,13 @@ static void probe_cb_produce(void *arg, enum notify_id type, void *data)
 			if (ret < 0)
 				goto err;
 		}
-		/* check if more than 75% of buffer size is already used */
-		if (_probe->ext_dma.dmapb.size - _probe->ext_dma.dmapb.avail <
-		    _probe->ext_dma.dmapb.size >> 2)
-			probe_task(NULL);
+#if CONFIG_IPC_MAJOR_4
+		ret = copy_to_pbuffer(&_probe->ext_dma.dmapb,
+				      &checksum, sizeof(checksum));
+		if (ret < 0)
+			goto err;
+#endif
+		kick_probe_task(_probe);
 	} else {
 		/* search for DMA used by this probe point */
 		for (j = 0; j < CONFIG_PROBE_DMA_MAX; j++) {
@@ -825,9 +880,9 @@ static void probe_cb_produce(void *arg, enum notify_id type, void *data)
 		}
 		dma = &_probe->inject_dma[j];
 		/* get avail data info */
-		ret = dma_get_data_size(dma->dc.chan,
-					&dma->dmapb.avail,
-					&free_bytes);
+		ret = dma_get_data_size_legacy(dma->dc.chan,
+					       &dma->dmapb.avail,
+					       &free_bytes);
 		if (ret < 0) {
 			tr_err(&pr_tr, "probe_cb_produce(): dma_get_data_size() failed, ret = %u",
 			       ret);
@@ -837,8 +892,8 @@ static void probe_cb_produce(void *arg, enum notify_id type, void *data)
 		/* check if transaction amount exceeds component buffer end addr */
 		/* if yes: divide copying into two stages, head and tail */
 		if ((char *)cb_data->transaction_begin_address +
-			cb_data->transaction_amount > (char *)cb_data->buffer->stream.end_addr) {
-			head = (char *)cb_data->buffer->stream.end_addr -
+			cb_data->transaction_amount > (char *)buffer->stream.end_addr) {
+			head = (char *)buffer->stream.end_addr -
 				(char *)cb_data->transaction_begin_address;
 			tail = cb_data->transaction_amount - head;
 
@@ -848,7 +903,7 @@ static void probe_cb_produce(void *arg, enum notify_id type, void *data)
 				goto err;
 
 			ret = copy_from_pbuffer(&dma->dmapb,
-						cb_data->buffer->stream.addr, tail);
+						buffer->stream.addr, tail);
 			if (ret < 0)
 				goto err;
 		} else {
@@ -869,10 +924,10 @@ static void probe_cb_produce(void *arg, enum notify_id type, void *data)
 
 		/* check if copy_bytes is still valid for dma copy */
 		if (copy_bytes > 0) {
-			ret = dma_copy_to_host(&dma->dc,
-					       &dma->config, 0,
-					       (void *)dma->dmapb.r_ptr,
-					       copy_bytes);
+			ret = dma_copy_to_host_nowait(&dma->dc,
+						      &dma->config, 0,
+						      (void *)dma->dmapb.r_ptr,
+						      copy_bytes);
 			if (ret < 0)
 				goto err;
 
@@ -895,8 +950,7 @@ err:
  */
 static void probe_cb_free(void *arg, enum notify_id type, void *data)
 {
-	struct buffer_cb_free *cb_data = data;
-	uint32_t buffer_id = cb_data->buffer->id;
+	uint32_t buffer_id = *(int *)arg;
 	int ret;
 
 	tr_dbg(&pr_tr, "probe_cb_free() buffer_id = %u", buffer_id);
@@ -904,6 +958,80 @@ static void probe_cb_free(void *arg, enum notify_id type, void *data)
 	ret = probe_point_remove(1, &buffer_id);
 	if (ret < 0)
 		tr_err(&pr_tr, "probe_cb_free(): probe_point_remove() failed");
+}
+
+static bool probe_purpose_needs_ext_dma(uint32_t purpose)
+{
+#if CONFIG_IPC_MAJOR_4
+	return purpose == PROBE_PURPOSE_EXTRACTION;
+#else
+	return purpose == PROBE_PURPOSE_EXTRACTION || purpose == PROBE_PURPOSE_LOGGING;
+#endif
+}
+
+#if CONFIG_IPC_MAJOR_4
+static struct comp_buffer *ipc4_get_buffer(struct ipc_comp_dev *dev, probe_point_id_t probe_point)
+{
+	struct comp_buffer *buf;
+	struct comp_buffer __sparse_cache *buf_c;
+	struct list_item *sink_list, *source_list;
+
+	switch (probe_point.fields.type) {
+	case PROBE_TYPE_INPUT:
+		if (list_is_empty(&dev->cd->bsource_list))
+			return NULL;
+
+		list_for_item(source_list, &dev->cd->bsource_list) {
+			buf = container_of(source_list, struct comp_buffer, sink_list);
+			buf_c = buffer_acquire(buf);
+
+			if (IPC4_SRC_QUEUE_ID(buf_c->id) == probe_point.fields.index)
+				break;
+
+			buffer_release(buf_c);
+		}
+		break;
+	case PROBE_TYPE_OUTPUT:
+		if (list_is_empty(&dev->cd->bsink_list))
+			return NULL;
+
+		list_for_item(sink_list, &dev->cd->bsink_list) {
+			buf = container_of(sink_list, struct comp_buffer, source_list);
+			buf_c = buffer_acquire(buf);
+
+			if (IPC4_SINK_QUEUE_ID(buf_c->id) == probe_point.fields.index)
+				break;
+
+			buffer_release(buf_c);
+		}
+		break;
+	default:
+		return NULL;
+	}
+	buffer_release(buf_c);
+	return buf;
+}
+#endif
+
+static bool enable_logs(struct probe_point *probe)
+{
+#if CONFIG_IPC_MAJOR_4
+	return probe->buffer_id.fields.module_id == 0;
+#else
+	return probe->purpose == PROBE_PURPOSE_LOGGING;
+#endif
+}
+
+static bool verify_purpose(uint32_t purpose)
+{
+#if CONFIG_IPC_MAJOR_4
+	return purpose == PROBE_PURPOSE_EXTRACTION ||
+	       purpose == PROBE_PURPOSE_INJECTION;
+#else
+	return purpose == PROBE_PURPOSE_EXTRACTION ||
+	       purpose == PROBE_PURPOSE_INJECTION ||
+	       purpose == PROBE_PURPOSE_LOGGING;
+#endif
 }
 
 int probe_point_add(uint32_t count, struct probe_point *probe)
@@ -914,8 +1042,11 @@ int probe_point_add(uint32_t count, struct probe_point *probe)
 	uint32_t buffer_id;
 	uint32_t first_free;
 	uint32_t dma_found;
-	struct ipc_comp_dev *dev;
-
+	uint32_t fw_logs;
+	struct ipc_comp_dev *dev = NULL;
+#if CONFIG_IPC_MAJOR_4
+	struct comp_buffer *buf = NULL;
+#endif
 	tr_dbg(&pr_tr, "probe_point_add() count = %u", count);
 
 	if (!_probe) {
@@ -927,38 +1058,54 @@ int probe_point_add(uint32_t count, struct probe_point *probe)
 	/* add all probe points if they are corresponding to valid component and DMA */
 	for (i = 0; i < count; i++) {
 		tr_dbg(&pr_tr, "\tprobe[%u] buffer_id = %u, purpose = %u, stream_tag = %u",
-		       i, probe[i].buffer_id, probe[i].purpose,
+		       i, probe[i].buffer_id.full_id, probe[i].purpose,
 		       probe[i].stream_tag);
 
-		if (probe[i].purpose != PROBE_PURPOSE_EXTRACTION &&
-		    probe[i].purpose != PROBE_PURPOSE_INJECTION) {
+		if (!verify_purpose(probe[i].purpose)) {
 			tr_err(&pr_tr, "probe_point_add() error: invalid purpose %d",
 			       probe[i].purpose);
 
 			return -EINVAL;
 		}
 
-		if (probe[i].purpose == PROBE_PURPOSE_EXTRACTION &&
-		    _probe->ext_dma.stream_tag == PROBE_DMA_INVALID) {
-			tr_err(&pr_tr, "probe_point_add(): Setting probe for extraction, while extraction DMA not enabled.");
-
+		if (_probe->ext_dma.stream_tag == PROBE_DMA_INVALID &&
+		    probe_purpose_needs_ext_dma(probe[i].purpose)) {
+			tr_err(&pr_tr, "probe_point_add(): extraction DMA not enabled.");
 			return -EINVAL;
 		}
 
-		/* check if buffer exists */
-		dev = ipc_get_comp_by_id(ipc_get(), probe[i].buffer_id);
-		if (!dev) {
-			tr_err(&pr_tr, "probe_point_add(): No device with ID %u found.",
-			       probe[i].buffer_id);
+		fw_logs = enable_logs(&probe[i]);
 
-			return -EINVAL;
-		}
+		if (!fw_logs && probe[i].purpose == PROBE_PURPOSE_EXTRACTION) {
+#if CONFIG_IPC_MAJOR_4
+			dev = ipc_get_comp_by_id(ipc_get(), IPC4_COMP_ID(probe[i].buffer_id.fields.module_id,
+									 probe[i].buffer_id.fields.instance_id));
+#else
+			dev = ipc_get_comp_by_id(ipc_get(), probe[i].buffer_id.full_id);
+#endif
+			/* check if buffer exists */
+			if (!dev) {
+				tr_err(&pr_tr, "probe_point_add(): No device with ID %u found.",
+				       probe[i].buffer_id.full_id);
 
-		if (dev->type != COMP_TYPE_BUFFER) {
-			tr_err(&pr_tr, "probe_point_add(): Device ID %u is not a buffer.",
-			       probe[i].buffer_id);
+				return -EINVAL;
+			}
+#if CONFIG_IPC_MAJOR_4
+			buf = ipc4_get_buffer(dev, probe[i].buffer_id);
+			if (!buf) {
+				tr_err(&pr_tr, "probe_point_add(): buffer %u not found.",
+				       probe[i].buffer_id.full_id);
 
-			return -EINVAL;
+				return -EINVAL;
+			}
+#else
+			if (dev->type != COMP_TYPE_BUFFER) {
+				tr_err(&pr_tr, "probe_point_add(): Device ID %u is not a buffer.",
+				       probe[i].buffer_id.full_id);
+
+				return -EINVAL;
+			}
+#endif
 		}
 
 		first_free = CONFIG_PROBE_POINTS_MAX;
@@ -973,8 +1120,8 @@ int probe_point_add(uint32_t count, struct probe_point *probe)
 				continue;
 			}
 			/* and check if probe is already attached */
-			buffer_id = _probe->probe_points[j].buffer_id;
-			if (buffer_id == probe[i].buffer_id) {
+			buffer_id = _probe->probe_points[j].buffer_id.full_id;
+			if (buffer_id == probe[i].buffer_id.full_id) {
 				if (_probe->probe_points[j].purpose ==
 				    probe[i].purpose) {
 					tr_err(&pr_tr, "probe_point_add(): Probe already attached to buffer %u with purpose %u",
@@ -1003,6 +1150,7 @@ int probe_point_add(uint32_t count, struct probe_point *probe)
 				    _probe->inject_dma[j].stream_tag ==
 				    probe[i].stream_tag) {
 					dma_found = 1;
+					probe[i].stream_tag = probe[i].stream_tag;
 					break;
 				}
 			}
@@ -1013,15 +1161,16 @@ int probe_point_add(uint32_t count, struct probe_point *probe)
 
 				return -EINVAL;
 			}
-			if (dma_start(_probe->inject_dma[j].dc.chan) < 0) {
+			if (dma_start_legacy(_probe->inject_dma[j].dc.chan) < 0) {
 				tr_err(&pr_tr, "probe_point_add(): failed to start dma");
 
 				return -EBUSY;
 			}
-		} else if (probe[i].purpose == PROBE_PURPOSE_EXTRACTION) {
+		} else {
+			/* prepare extraction DMA */
 			for (j = 0; j < CONFIG_PROBE_POINTS_MAX; j++) {
 				if (_probe->probe_points[j].stream_tag != PROBE_DMA_INVALID &&
-				    _probe->probe_points[j].purpose == PROBE_PURPOSE_EXTRACTION)
+				    probe_purpose_needs_ext_dma(_probe->probe_points[j].purpose))
 					break;
 			}
 			if (j == CONFIG_PROBE_POINTS_MAX) {
@@ -1038,13 +1187,67 @@ int probe_point_add(uint32_t count, struct probe_point *probe)
 		_probe->probe_points[first_free].stream_tag =
 			probe[i].stream_tag;
 
-		notifier_register(_probe, dev->cb, NOTIFIER_ID_BUFFER_PRODUCE,
-				  &probe_cb_produce, 0);
-		notifier_register(_probe, dev->cb, NOTIFIER_ID_BUFFER_FREE,
-				  &probe_cb_free, 0);
+		if (fw_logs) {
+#if CONFIG_LOG_BACKEND_SOF_PROBE
+			probe_logging_init(probe_logging_hook);
+#else
+			return -EINVAL;
+#endif
+		} else {
+#if CONFIG_IPC_MAJOR_4
+			notifier_register(&probe[i].buffer_id.full_id, buf, NOTIFIER_ID_BUFFER_PRODUCE,
+					  &probe_cb_produce, 0);
+			notifier_register(&probe[i].buffer_id.full_id, buf, NOTIFIER_ID_BUFFER_FREE,
+					  &probe_cb_free, 0);
+#else
+			notifier_register(&probe[i].buffer_id.full_id, dev->cb, NOTIFIER_ID_BUFFER_PRODUCE,
+					  &probe_cb_produce, 0);
+			notifier_register(&probe[i].buffer_id.full_id, dev->cb, NOTIFIER_ID_BUFFER_FREE,
+					  &probe_cb_free, 0);
+#endif
+		}
 	}
 
 	return 0;
+}
+
+#if CONFIG_IPC_MAJOR_3
+int probe_dma_info(struct sof_ipc_probe_info_params *data, uint32_t max_size)
+{
+	struct probe_pdata *_probe = probe_get();
+	uint32_t i = 0;
+	uint32_t j = 0;
+
+	tr_dbg(&pr_tr, "probe_dma_info()");
+
+	if (!_probe) {
+		tr_err(&pr_tr, "probe_dma_info(): Not initialized.");
+
+		return -EINVAL;
+	}
+
+	data->rhdr.hdr.size = sizeof(*data);
+
+	/* search all injection DMAs to send them in reply */
+	while (i < CONFIG_PROBE_DMA_MAX &&
+	       data->rhdr.hdr.size + sizeof(struct probe_dma) < max_size) {
+		/* save it if valid */
+		if (_probe->inject_dma[i].stream_tag != PROBE_DMA_INVALID) {
+			data->probe_dma[j].stream_tag =
+				_probe->inject_dma[i].stream_tag;
+			data->probe_dma[j].dma_buffer_size =
+				_probe->inject_dma[i].dma_buffer_size;
+			j++;
+			/* and increase reply header size */
+			data->rhdr.hdr.size += sizeof(struct probe_dma);
+		}
+
+		i++;
+	}
+
+	data->num_elems = j;
+
+	return 1;
 }
 
 int probe_point_info(struct sof_ipc_probe_info_params *data, uint32_t max_size)
@@ -1083,6 +1286,7 @@ int probe_point_info(struct sof_ipc_probe_info_params *data, uint32_t max_size)
 
 	return 1;
 }
+#endif
 
 int probe_point_remove(uint32_t count, uint32_t *buffer_id)
 {
@@ -1090,6 +1294,9 @@ int probe_point_remove(uint32_t count, uint32_t *buffer_id)
 	struct ipc_comp_dev *dev;
 	uint32_t i;
 	uint32_t j;
+#if CONFIG_IPC_MAJOR_4
+	struct comp_buffer *buf;
+#endif
 
 	tr_dbg(&pr_tr, "probe_point_remove() count = %u", count);
 
@@ -1103,15 +1310,24 @@ int probe_point_remove(uint32_t count, uint32_t *buffer_id)
 
 		for (j = 0; j < CONFIG_PROBE_POINTS_MAX; j++) {
 			if (_probe->probe_points[j].stream_tag != PROBE_POINT_INVALID &&
-			    _probe->probe_points[j].buffer_id == buffer_id[i]) {
+			    _probe->probe_points[j].buffer_id.full_id == buffer_id[i]) {
+#if CONFIG_IPC_MAJOR_4
+				dev = ipc_get_comp_by_id(ipc_get(), IPC4_COMP_ID(_probe->probe_points[j].buffer_id.fields.module_id,
+										 _probe->probe_points[j].buffer_id.fields.instance_id));
+				if (dev) {
+					buf = ipc4_get_buffer(dev, _probe->probe_points[j].buffer_id);
+					if (buf) {
+						notifier_unregister(NULL, buf, NOTIFIER_ID_BUFFER_PRODUCE);
+						notifier_unregister(NULL, buf, NOTIFIER_ID_BUFFER_FREE);
+					}
+				}
+#else
 				dev = ipc_get_comp_by_id(ipc_get(), buffer_id[i]);
 				if (dev) {
-					notifier_unregister(_probe, dev->cb,
-							    NOTIFIER_ID_BUFFER_PRODUCE);
-					notifier_unregister(_probe, dev->cb,
-							    NOTIFIER_ID_BUFFER_FREE);
+					notifier_unregister(_probe, dev->cb, NOTIFIER_ID_BUFFER_PRODUCE);
+					notifier_unregister(_probe, dev->cb, NOTIFIER_ID_BUFFER_FREE);
 				}
-
+#endif
 				_probe->probe_points[j].stream_tag =
 					PROBE_POINT_INVALID;
 			}
@@ -1129,3 +1345,90 @@ int probe_point_remove(uint32_t count, uint32_t *buffer_id)
 
 	return 0;
 }
+
+#if CONFIG_IPC_MAJOR_4
+static struct comp_dev *probe_new(const struct comp_driver *drv,
+				  struct comp_ipc_config *config, void *spec)
+{
+	struct ipc4_probe_module_cfg *probe_cfg = spec;
+	struct comp_dev *dev;
+	int ret;
+
+	comp_cl_info(&comp_probe, "probe_new()");
+
+	dev = comp_alloc(drv, sizeof(*dev));
+	if (!dev)
+		return NULL;
+
+	dev->ipc_config = *config;
+
+	ret = probe_init(&probe_cfg->gtw_cfg);
+	if (ret < 0) {
+		comp_free(dev);
+		return NULL;
+	}
+	dev->state = COMP_STATE_READY;
+
+	return dev;
+}
+
+static void probe_free(struct comp_dev *dev)
+{
+	probe_deinit();
+	rfree(dev);
+}
+
+static int probe_set_large_config(struct comp_dev *dev, uint32_t param_id,
+				  bool first_block,
+				  bool last_block,
+				  uint32_t data_offset,
+				  char *data)
+{
+	comp_dbg(dev, "probe_set_large_config()");
+
+	switch (param_id) {
+	case IPC4_PROBE_MODULE_PROBE_POINTS_ADD:
+		return probe_point_add(data_offset / sizeof(struct probe_point), (struct probe_point *)data);
+	case IPC4_PROBE_MODULE_DISCONNECT_PROBE_POINTS:
+		return probe_point_remove(data_offset / sizeof(uint32_t), (uint32_t *)data);
+	case IPC4_PROBE_MODULE_INJECTION_DMA_ADD:
+		return probe_dma_add(data_offset / (2 * sizeof(uint32_t)), (struct probe_dma *)data);
+	case IPC4_PROBE_MODULE_INJECTION_DMA_DETACH:
+		return probe_dma_remove(data_offset / sizeof(uint32_t), (uint32_t *)data);
+	default:
+		return -EINVAL;
+	}
+}
+
+static int probe_get_large_config(struct comp_dev *dev, uint32_t param_id,
+				  bool first_block,
+				  bool last_block,
+				  uint32_t *data_offset,
+				  char *data)
+{
+	return 0;
+}
+
+static const struct comp_driver comp_probe = {
+	.uid	= SOF_RT_UUID(probe_uuid),
+	.tctx	= &pr_tr,
+	.ops	= {
+		.create			= probe_new,
+		.free			= probe_free,
+		.set_large_config	= probe_set_large_config,
+		.get_large_config	= probe_get_large_config,
+	},
+};
+
+static SHARED_DATA struct comp_driver_info comp_probe_info = {
+	.drv = &comp_probe,
+};
+
+UT_STATIC void sys_comp_probe_init(void)
+{
+	comp_register(platform_shared_get(&comp_probe_info,
+					  sizeof(comp_probe_info)));
+}
+
+DECLARE_MODULE(sys_comp_probe_init);
+#endif

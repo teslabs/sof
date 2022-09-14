@@ -5,12 +5,12 @@
 // Author: Liam Girdwood <liam.r.girdwood@linux.intel.com>
 
 #include <cavs/lib/pm_memory.h>
-#include <sof/bit.h>
-#include <sof/lib/cache.h>
+#include <rtos/bit.h>
+#include <rtos/cache.h>
 #include <sof/lib/io.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/shim.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <sof/platform.h>
 #include <sof/sof.h>
 #include <sof/trace/trace.h>

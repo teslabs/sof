@@ -10,11 +10,14 @@
 #include <sof/common.h>
 #include <sof/drivers/dw-dma.h>
 #include <sof/drivers/hda-dma.h>
-#include <sof/drivers/interrupt.h>
+#include <rtos/interrupt.h>
 #include <sof/lib/dma.h>
 #include <sof/lib/memory.h>
 #include <sof/sof.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
+#ifdef __ZEPHYR__
+#include <zephyr/device.h>
+#endif
 
 #if CONFIG_APOLLOLAKE
 #define DMAC0_CLASS 1
@@ -246,6 +249,9 @@ static const struct dma_info lib_dma = {
 /* Initialize all platform DMAC's */
 int dmac_init(struct sof *sof)
 {
+#if CONFIG_ZEPHYR_NATIVE_DRIVERS
+	const struct device *z_dev = NULL;
+#endif
 	int i;
 	/* no probing before first use */
 
@@ -254,8 +260,38 @@ int dmac_init(struct sof *sof)
 	sof->dma_info = &lib_dma;
 
 	/* early lock initialization for ref counting */
-	for (i = 0; i < sof->dma_info->num_dmas; i++)
+	for (i = 0; i < sof->dma_info->num_dmas; i++) {
 		k_spinlock_init(&sof->dma_info->dma_array[i].lock);
+#if CONFIG_ZEPHYR_NATIVE_DRIVERS
+		switch (sof->dma_info->dma_array[i].plat_data.id) {
+		case DMA_HOST_IN_DMAC:
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(hda_host_in), okay)
+			z_dev = DEVICE_DT_GET(DT_NODELABEL(hda_host_in));
+#endif
+			break;
+		case DMA_HOST_OUT_DMAC:
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(hda_host_out), okay)
+			z_dev = DEVICE_DT_GET(DT_NODELABEL(hda_host_out));
+#endif
+			break;
+		case DMA_GP_LP_DMAC0:
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(lpgpdma0), okay)
+			z_dev = DEVICE_DT_GET(DT_NODELABEL(lpgpdma0));
+#endif
+			break;
+		case DMA_GP_LP_DMAC1:
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(lpgpdma1), okay)
+			z_dev = DEVICE_DT_GET(DT_NODELABEL(lpgpdma1));
+#endif
+			break;
+		default:
+			continue;
+		}
+		if (!z_dev)
+			return -EINVAL;
 
+		sof->dma_info->dma_array[i].z_dev = z_dev;
+#endif
+	}
 	return 0;
 }

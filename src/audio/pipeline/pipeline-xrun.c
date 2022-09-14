@@ -10,8 +10,8 @@
 #include <sof/audio/pipeline.h>
 #include <sof/ipc/msg.h>
 #include <sof/list.h>
-#include <sof/spinlock.h>
-#include <sof/string.h>
+#include <rtos/spinlock.h>
+#include <rtos/string.h>
 #include <ipc/header.h>
 #include <ipc/stream.h>
 #include <ipc/topology.h>
@@ -19,6 +19,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+LOG_MODULE_DECLARE(pipe, CONFIG_SOF_LOG_LEVEL);
 
 /*
  * This flag disables firmware-side xrun recovery.

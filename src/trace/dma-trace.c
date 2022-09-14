@@ -8,8 +8,8 @@
 #include <sof/common.h>
 #include <sof/debug/panic.h>
 #include <sof/ipc/msg.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/cache.h>
+#include <rtos/alloc.h>
+#include <rtos/cache.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/dma.h>
 #include <sof/lib/memory.h>
@@ -19,8 +19,8 @@
 #include <sof/schedule/schedule.h>
 #include <sof/schedule/task.h>
 #include <sof/sof.h>
-#include <sof/spinlock.h>
-#include <sof/string.h>
+#include <rtos/spinlock.h>
+#include <rtos/string.h>
 #include <sof/trace/dma-trace.h>
 #include <ipc/topology.h>
 #include <ipc/trace.h>
@@ -35,6 +35,8 @@
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(dma_trace, CONFIG_SOF_LOG_LEVEL);
 
 /* 58782c63-1326-4185-8459-22272e12d1f1 */
 DECLARE_SOF_UUID("dma-trace", dma_trace_uuid, 0x58782c63, 0x1326, 0x4185,
@@ -286,7 +288,7 @@ static int dma_trace_buffer_init(struct dma_trace_data *d)
 	}
 
 	bzero(buf, DMA_TRACE_LOCAL_SIZE);
-	dcache_writeback_region(buf, DMA_TRACE_LOCAL_SIZE);
+	dcache_writeback_region((__sparse_force void __sparse_cache *)buf, DMA_TRACE_LOCAL_SIZE);
 
 	/* initialise the DMA buffer, whole sequence in section */
 	key = k_spin_lock(&d->lock);
@@ -372,7 +374,7 @@ static int dma_trace_start(struct dma_trace_data *d)
 			      d->active_stream_tag);
 
 		schedule_task_cancel(&d->dmat_work);
-		err = dma_stop(d->dc.chan);
+		err = dma_stop_legacy(d->dc.chan);
 		if (err < 0) {
 			mtrace_printf(LOG_LEVEL_ERROR,
 				      "dma_trace_start(): DMA channel failed to stop");
@@ -382,7 +384,7 @@ static int dma_trace_start(struct dma_trace_data *d)
 				      "dma_trace_start(): stream_tag change from %u to %u",
 				      d->active_stream_tag, d->stream_tag);
 
-			dma_channel_put(d->dc.chan);
+			dma_channel_put_legacy(d->dc.chan);
 			d->dc.chan = NULL;
 			err = dma_copy_set_stream_tag(&d->dc, d->stream_tag);
 		}
@@ -398,18 +400,18 @@ static int dma_trace_start(struct dma_trace_data *d)
 
 	d->active_stream_tag = d->stream_tag;
 
-	err = dma_set_config(d->dc.chan, &d->gw_config);
+	err = dma_set_config_legacy(d->dc.chan, &d->gw_config);
 	if (err < 0) {
 		mtrace_printf(LOG_LEVEL_ERROR, "dma_set_config() failed: %d", err);
 		goto error;
 	}
 
-	err = dma_start(d->dc.chan);
+	err = dma_start_legacy(d->dc.chan);
 	if (err == 0)
 		return 0;
 
 error:
-	dma_channel_put(d->dc.chan);
+	dma_channel_put_legacy(d->dc.chan);
 	d->dc.chan = NULL;
 
 	return err;
@@ -502,8 +504,8 @@ void dma_trace_disable(struct dma_trace_data *d)
 	schedule_task_cancel(&d->dmat_work);
 
 	if (d->dc.chan) {
-		dma_stop(d->dc.chan);
-		dma_channel_put(d->dc.chan);
+		dma_stop_legacy(d->dc.chan);
+		dma_channel_put_legacy(d->dc.chan);
 		d->dc.chan = NULL;
 	}
 
@@ -549,7 +551,7 @@ void dma_trace_flush(void *t)
 	size = MIN(size, MAILBOX_TRACE_SIZE);
 
 	/* invalidate trace data */
-	dcache_invalidate_region((void *)t, size);
+	dcache_invalidate_region((__sparse_force void __sparse_cache *)t, size);
 
 	/* check for buffer wrap */
 	if ((char *)buffer->w_ptr - size < (char *)buffer->addr) {
@@ -567,7 +569,7 @@ void dma_trace_flush(void *t)
 	}
 
 	/* writeback trace data */
-	dcache_writeback_region((void *)t, size);
+	dcache_writeback_region((__sparse_force void __sparse_cache *)t, size);
 
 }
 
@@ -660,25 +662,29 @@ static void dtrace_add_event(const char *e, uint32_t length)
 		/* check for buffer wrap */
 		if (margin > length) {
 			/* no wrap */
-			dcache_invalidate_region(buffer->w_ptr, length);
+			dcache_invalidate_region((__sparse_force void __sparse_cache *)buffer->w_ptr,
+						 length);
 			ret = memcpy_s(buffer->w_ptr, length, e, length);
 			assert(!ret);
-			dcache_writeback_region(buffer->w_ptr, length);
+			dcache_writeback_region((__sparse_force void __sparse_cache *)buffer->w_ptr,
+						length);
 			buffer->w_ptr = (char *)buffer->w_ptr + length;
 		} else {
 			/* data is bigger than remaining margin so we wrap */
-			dcache_invalidate_region(buffer->w_ptr, margin);
+			dcache_invalidate_region((__sparse_force void __sparse_cache *)buffer->w_ptr,
+						 margin);
 			ret = memcpy_s(buffer->w_ptr, margin, e, margin);
 			assert(!ret);
-			dcache_writeback_region(buffer->w_ptr, margin);
+			dcache_writeback_region((__sparse_force void __sparse_cache *)buffer->w_ptr,
+						margin);
 			buffer->w_ptr = buffer->addr;
 
-			dcache_invalidate_region(buffer->w_ptr,
+			dcache_invalidate_region((__sparse_force void __sparse_cache *)buffer->w_ptr,
 						 length - margin);
 			ret = memcpy_s(buffer->w_ptr, length - margin,
 				       e + margin, length - margin);
 			assert(!ret);
-			dcache_writeback_region(buffer->w_ptr,
+			dcache_writeback_region((__sparse_force void __sparse_cache *)buffer->w_ptr,
 						length - margin);
 			buffer->w_ptr = (char *)buffer->w_ptr + length - margin;
 		}

@@ -11,16 +11,17 @@
 #include <sof/audio/ipc-config.h>
 #include <sof/audio/kpb.h>
 #include <sof/common.h>
+#include <sof/compiler_attributes.h>
 #include <sof/debug/panic.h>
 #include <sof/ipc/msg.h>
-#include <sof/lib/alloc.h>
+#include <rtos/alloc.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/notifier.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <sof/lib/uuid.h>
 #include <sof/list.h>
 #include <sof/math/numbers.h>
-#include <sof/string.h>
+#include <rtos/string.h>
 #include <sof/ut.h>
 #include <sof/trace/trace.h>
 #include <ipc/control.h>
@@ -55,6 +56,8 @@
 
 static const struct comp_driver comp_keyword;
 
+LOG_MODULE_REGISTER(kd_test, CONFIG_SOF_LOG_LEVEL);
+
 /* eba8d51f-7827-47b5-82ee-de6e7743af67 */
 DECLARE_SOF_RT_UUID("kd-test", keyword_uuid, 0xeba8d51f, 0x7827, 0x47b5,
 		 0x82, 0xee, 0xde, 0x6e, 0x77, 0x43, 0xaf, 0x67);
@@ -82,11 +85,11 @@ struct comp_data {
 	size_t input_size;
 #endif
 
-	struct sof_ipc_comp_event event;
 	struct ipc_msg *msg;	/**< host notification */
 
 	void (*detect_func)(struct comp_dev *dev,
-			    const struct audio_stream *source, uint32_t frames);
+			    const struct audio_stream __sparse_cache *source, uint32_t frames);
+	struct sof_ipc_comp_event event;
 };
 
 static inline bool detector_is_sample_width_supported(enum sof_ipc_frame sf)
@@ -153,7 +156,7 @@ void detect_test_notify(const struct comp_dev *dev)
 }
 
 static void default_detect_test(struct comp_dev *dev,
-				const struct audio_stream *source,
+				const struct audio_stream __sparse_cache *source,
 				uint32_t frames)
 {
 	struct comp_data *cd = comp_get_drvdata(dev);
@@ -382,6 +385,9 @@ static int test_keyword_params(struct comp_dev *dev,
 {
 	struct comp_data *cd = comp_get_drvdata(dev);
 	struct comp_buffer *sourceb;
+	struct comp_buffer __sparse_cache *source_c;
+	unsigned int channels, rate;
+	enum sof_ipc_frame frame_fmt;
 	int err;
 
 	/* Detector is used only in KPB topology. It always requires channels
@@ -400,13 +406,18 @@ static int test_keyword_params(struct comp_dev *dev,
 	/* keyword components will only ever have 1 source */
 	sourceb = list_first_item(&dev->bsource_list, struct comp_buffer,
 				  sink_list);
+	source_c = buffer_acquire(sourceb);
+	channels = source_c->stream.channels;
+	frame_fmt = source_c->stream.frame_fmt;
+	rate = source_c->stream.rate;
+	buffer_release(source_c);
 
-	if (sourceb->stream.channels != 1) {
+	if (channels != 1) {
 		comp_err(dev, "test_keyword_params(): only single-channel supported");
 		return -EINVAL;
 	}
 
-	if (!detector_is_sample_width_supported(sourceb->stream.frame_fmt)) {
+	if (!detector_is_sample_width_supported(frame_fmt)) {
 		comp_err(dev, "test_keyword_params(): only 16-bit format supported");
 		return -EINVAL;
 	}
@@ -414,7 +425,7 @@ static int test_keyword_params(struct comp_dev *dev,
 	/* calculate the length of the preamble */
 	if (cd->config.preamble_time) {
 		cd->keyphrase_samples = cd->config.preamble_time *
-					(sourceb->stream.rate / 1000);
+					(rate / 1000);
 	} else {
 		cd->keyphrase_samples = KEYPHRASE_DEFAULT_PREAMBLE_LENGTH;
 	}
@@ -625,6 +636,7 @@ static int test_keyword_copy(struct comp_dev *dev)
 {
 	struct comp_data *cd = comp_get_drvdata(dev);
 	struct comp_buffer *source;
+	struct comp_buffer __sparse_cache *source_c;
 	uint32_t frames;
 
 	comp_dbg(dev, "test_keyword_copy()");
@@ -632,20 +644,23 @@ static int test_keyword_copy(struct comp_dev *dev)
 	/* keyword components will only ever have 1 source */
 	source = list_first_item(&dev->bsource_list,
 				 struct comp_buffer, sink_list);
+	source_c = buffer_acquire(source);
 
-	if (!source->stream.avail)
+	if (!source_c->stream.avail) {
+		buffer_release(source_c);
 		return PPL_STATUS_PATH_STOP;
+	}
 
-	source = buffer_acquire(source);
-	frames = audio_stream_get_avail_frames(&source->stream);
-	source = buffer_release(source);
+	frames = audio_stream_get_avail_frames(&source_c->stream);
 
 	/* copy and perform detection */
-	buffer_stream_invalidate(source, audio_stream_get_avail_bytes(&source->stream));
-	cd->detect_func(dev, &source->stream, frames);
+	buffer_stream_invalidate(source_c, audio_stream_get_avail_bytes(&source_c->stream));
+	cd->detect_func(dev, &source_c->stream, frames);
 
 	/* calc new available */
-	comp_update_buffer_consume(source, audio_stream_get_avail_bytes(&source->stream));
+	comp_update_buffer_consume(source_c, audio_stream_get_avail_bytes(&source_c->stream));
+
+	buffer_release(source_c);
 
 	return 0;
 }

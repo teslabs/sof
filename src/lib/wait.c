@@ -8,10 +8,10 @@
  * Simple wait for event completion and signaling with timeouts.
  */
 
-#include <sof/lib/clk.h>
+#include <rtos/clk.h>
 #include <sof/lib/io.h>
 #include <sof/lib/uuid.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <sof/platform.h>
 #include <sof/schedule/schedule.h>
 #include <sof/trace/trace.h>
@@ -19,6 +19,8 @@
 #include <errno.h>
 #include <stdint.h>
 #include <inttypes.h>
+
+LOG_MODULE_REGISTER(wait, CONFIG_SOF_LOG_LEVEL);
 
 /* 1028070e-04e8-46ab-8d81-10a0116ce738 */
 DECLARE_SOF_UUID("wait", wait_uuid, 0x1028070e, 0x04e8, 0x46ab,
@@ -58,9 +60,9 @@ int poll_for_register_delay(uint32_t reg, uint32_t mask,
 
 void wait_delay(uint64_t number_of_clks)
 {
-	uint64_t timeout = k_cycle_get_64() + number_of_clks;
+	uint64_t timeout = sof_cycle_get_64() + number_of_clks;
 
-	while (k_cycle_get_64() < timeout)
+	while (sof_cycle_get_64() < timeout)
 		idelay(PLATFORM_DEFAULT_DELAY);
 }
 

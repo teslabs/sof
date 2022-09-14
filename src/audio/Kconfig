@@ -20,6 +20,13 @@ config COMP_DAI
 	help
 	  Select for DAI component
 
+config COMP_DAI_GROUP
+	bool "DAI Grouping support"
+	default y
+	help
+	  Select for grouping physical DAIs into a logical DAI that can be
+	  triggered atomically to synchronise stream start and stop operations.
+
 config COMP_ARIA
         bool "ARIA component"
         default n
@@ -30,12 +37,6 @@ config COMP_ARIA
 	  Applied gain is in range <1, 2 power attenuation>
 	  Currently ARIA introduces gain transition and algorithmic
 	  latency equal to 1 ms.
-
-config COMP_VOLUME
-	bool "Volume component"
-	default y
-	help
-	  Select for Volume component
 
 config COMP_UP_DOWN_MIXER
 	bool "UP_DOWN_MIXER component"
@@ -51,42 +52,13 @@ config COMP_UP_DOWN_MIXER
          Downmixing for mono output:
          4.0, Quatro, 3.1, 2 -> 1
 
-if COMP_VOLUME
-
-config COMP_VOLUME_WINDOWS_FADE
-       bool "Windows Fade shape volume transitions support"
-       help
-         This option enables volume ramp shape that follows
-	 power of 1.75. The shape is not linear, not logarithmic.
-	 The power function uses a lookup table that consumes
-	 256 bytes. The topology must set volume ramp token to
-	 SOF_VOLUME_WINDOWS_FADE for the volume instance to use
-	 this ramp shape.
-
-config COMP_VOLUME_LINEAR_RAMP
-       bool "Linear ramp volume transitions support"
-	   default y
-	   depends on IPC_MAJOR_3
-       help
-         This option enables volume linear ramp shape.
-
-config COMP_PEAK_VOL
-       bool "Report peak vol data to host"
-	   default y
-	   depends on IPC_MAJOR_4
-       help
-         This option enables reporting to host peak vol regs.
-         See: struct ipc4_peak_volume_regs
-
-config COMP_GAIN
-	bool "GAIN component"
+config COMP_BLOB
+	bool "Large IPC data as compound message blobs"
 	default y
-	depends on IPC_MAJOR_4
 	help
-	  This option enables gain to change volume. It works
-	  as peak volume without updating peak vol to host
-
-endif # volume
+	 Select to support sending large data blobs to firmware as
+	 multiple IPC messages. Not all components or modules need
+	 this. If unsure, say yes.
 
 config COMP_SRC
 	bool "SRC component"
@@ -132,6 +104,14 @@ config COMP_SRC_TINY
 	  has no critical usage or when only need with lower quality
 	  endpoint like miniature speakers.
 
+config COMP_SRC_IPC4_FULL_MATRIX
+	bool "Full IPC4 conversions matrix support and high quality"
+	help
+	  This coefficients set supports a large number of conversions
+	  with 8 - 192 kHz input 8 - 192 kHz output. The 32 bits coefficients
+	  storate consumes 241 kB. The runtime needs 9 kB. Use this to
+	  make the full conversions set available for IPC4 build.
+
 endchoice
 
 endif # SRC
@@ -139,6 +119,7 @@ endif # SRC
 config COMP_FIR
 	bool "FIR component"
 	select MATH_FIR
+	select COMP_BLOB
 	default y
 	help
 	  Select for FIR component. FIR performance can differ between DSP
@@ -150,6 +131,7 @@ config COMP_FIR
 
 config COMP_IIR
 	bool "IIR component"
+	select COMP_BLOB
 	default y
 	select MATH_IIR_DF2T
 	help
@@ -198,6 +180,7 @@ endif # COMP_KPB
 
 config COMP_GOOGLE_HOTWORD_DETECT
 	bool "Google hotword detector component"
+	select COMP_BLOB
 	default n
 	help
 	  Select for Google hotword detector component. It uses the Google
@@ -207,6 +190,7 @@ config COMP_GOOGLE_HOTWORD_DETECT
 
 config COMP_GOOGLE_RTC_AUDIO_PROCESSING
 	bool "Google Real Time Communication Audio processing"
+	select COMP_BLOB
 	default n
 	help
 	  Select for Google real-time communication audio processing. It
@@ -223,6 +207,20 @@ config GOOGLE_RTC_AUDIO_PROCESSING_MOCK
 	  Mock Google real-time communication audio processing.
 	  It allows for compilation check and basic audio flow checking.
 
+config COMP_GOOGLE_AUDIO_POST_PROCESSING
+	bool "Google playback audio post processing"
+	default n
+	help
+	  Select for Google playback audio post processing. It uses the Google
+	  audio post-processing library to apply EQ and other processing.
+
+config GOOGLE_AUDIO_POST_PROCESSING_MOCK
+        bool "Google playback audio post processing mock"
+	default n
+	depends on COMP_GOOGLE_AUDIO_POST_PROCESSING
+	help
+	  Mock Google playback audio post processing.
+	  It allows for compilation check and basic audio flow check.
 
 config COMP_SEL
 	bool "Channel selector component"
@@ -232,6 +230,7 @@ config COMP_SEL
 
 config COMP_CROSSOVER
 	bool "Crossover Filter component"
+	select COMP_BLOB
 	default n
 	help
 	  Select for Crossover Filter component. A crossover can be used to
@@ -243,6 +242,7 @@ config COMP_DRC
 	select CORDIC_FIXED
 	select NUMBERS_NORM
 	select MATH_DECIBELS
+	select COMP_BLOB
 	default n
 	help
 	  Select for Dynamic Range Compressor (DRC) component. A DRC can be used
@@ -263,6 +263,7 @@ config COMP_MULTIBAND_DRC
 	depends on COMP_IIR && COMP_CROSSOVER && COMP_DRC
 	bool "Multiband Dynamic Range Compressor component"
 	select CORDIC_FIXED
+	select COMP_BLOB
 	default n
 	help
 	  Select for Multiband Dynamic Range Compressor (DRC) component. It
@@ -279,6 +280,7 @@ config COMP_DCBLOCK
 config MAXIM_DSM
 	depends on CAVS && !CAVS_VERSION_1_5
 	bool "Maxim DSM component"
+	select COMP_BLOB
 	default n
 	help
 	  Select for Maxim DSM(Dynamic Speaker Management) component.
@@ -427,6 +429,7 @@ config COMP_TDFB
 	select MATH_IIR_DF2T
 	select SQRT_FIXED
 	select CORDIC_FIXED
+	select COMP_BLOB
 	default y
 	help
 	  Select for time domain fixed beamformer (TDFB) component. The
@@ -438,21 +441,28 @@ config COMP_TDFB
           for channels selection, channel filter coefficients, and output
           streams mixing.
 
-config COMP_CODEC_ADAPTER
-	bool "Codec adapter"
-	default n
+config COMP_MODULE_ADAPTER
+	bool "Module adapter"
+	default y
 	help
 	  This component is an adapter between SoF components and any external third
 	  party codecs/libraries. In order to make use of it the library itself should
 	  be statically linked with the SoF FW binary image and the codec details, such as its
 	  ID or specific methods provided in generic interface object located under
-	  "src\include\sof\audio\codec_adapter\interfaces.h". It is possible to link several
+	  "src\include\sof\audio\module_adapter\interfaces.h". It is possible to link several
 	  different codecs and use them in parallel.
 
-rsource "codec_adapter/Kconfig"
+rsource "module_adapter/Kconfig"
+
+config COMP_LEGACY_INTERFACE
+	bool "Use legacy component driver interface"
+	default n
+	help
+	  Use the legacy component driver interface for component instead of the module adapter.
 
 config COMP_IGO_NR
 	bool "IGO NR component"
+	select COMP_BLOB
 	default n
 	help
 	  This option enables Intelligo non-speech noise reduction. The feature links to a proprietary
@@ -461,6 +471,7 @@ config COMP_IGO_NR
 
 config COMP_RTNR
 	bool "RTNR component"
+	select COMP_BLOB
 	default n
 	help
 	  Select for Realtek noise reduction/suppression(NR/NS) component.

@@ -17,13 +17,13 @@
 #include <sof/debug/debug.h>
 #include <sof/drivers/dw-dma.h>
 #include <sof/drivers/idc.h>
-#include <sof/drivers/interrupt.h>
+#include <rtos/interrupt.h>
 #include <sof/ipc/common.h>
-#include <sof/drivers/timer.h>
+#include <rtos/timer.h>
 #include <sof/fw-ready-metadata.h>
 #include <sof/lib/agent.h>
-#include <sof/lib/cache.h>
-#include <sof/lib/clk.h>
+#include <rtos/cache.h>
+#include <rtos/clk.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/dai.h>
 #include <sof/lib/dma.h>
@@ -33,7 +33,7 @@
 #include <sof/lib/mm_heap.h>
 #include <sof/lib/notifier.h>
 #include <sof/lib/pm_runtime.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <sof/platform.h>
 #include <sof/schedule/edf_schedule.h>
 #include <sof/schedule/ll_schedule.h>
@@ -302,8 +302,7 @@ int platform_boot_complete(uint32_t boot_message)
 
 int platform_boot_complete(uint32_t boot_message)
 {
-	ipc_cmd_hdr header;
-	uint32_t data;
+	struct ipc_cmd_hdr header;
 
 #if CONFIG_TIGERLAKE && !CONFIG_CAVS_LPRO_ONLY
 	/* TGL specific HW recommended flow */
@@ -313,16 +312,25 @@ int platform_boot_complete(uint32_t boot_message)
 	mailbox_dspbox_write(0, &ready, sizeof(ready));
 
 	/* get any IPC specific boot message and optional data */
-	data = SRAM_WINDOW_HOST_OFFSET(0) >> 12;
-	ipc_boot_complete_msg(&header, &data);
+	ipc_boot_complete_msg(&header, SRAM_WINDOW_HOST_OFFSET(0) >> 12);
 
 	/* tell host we are ready */
+#if CONFIG_IPC_MAJOR_3
 #if CAVS_VERSION == CAVS_VERSION_1_5
-	ipc_write(IPC_DIPCIE, data);
-	ipc_write(IPC_DIPCI, IPC_DIPCI_BUSY | header);
+	ipc_write(IPC_DIPCIE, header.dat[1]);
+	ipc_write(IPC_DIPCI, IPC_DIPCI_BUSY | header.dat[0]);
 #else
-	ipc_write(IPC_DIPCIDD, data);
-	ipc_write(IPC_DIPCIDR, IPC_DIPCIDR_BUSY | header);
+	ipc_write(IPC_DIPCIDD, header.dat[1]);
+	ipc_write(IPC_DIPCIDR, IPC_DIPCIDR_BUSY | header.dat[0]);
+#endif
+#elif CONFIG_IPC_MAJOR_4
+#if CAVS_VERSION == CAVS_VERSION_1_5
+	ipc_write(IPC_DIPCIE, header.ext);
+	ipc_write(IPC_DIPCI, IPC_DIPCI_BUSY | header.pri);
+#else
+	ipc_write(IPC_DIPCIDD, header.ext);
+	ipc_write(IPC_DIPCIDR, IPC_DIPCIDR_BUSY | header.pri);
+#endif
 #endif
 	return 0;
 }
@@ -610,15 +618,21 @@ static void imr_layout_update(void *vector)
 	 * configuration, no symmetric task need to done in any
 	 * platform_resume() to clear the configuration.
 	 */
-	dcache_invalidate_region(imr_layout, sizeof(*imr_layout));
+	dcache_invalidate_region((__sparse_force void __sparse_cache *)imr_layout,
+				 sizeof(*imr_layout));
 	imr_layout->imr_state.header.adsp_imr_magic = ADSP_IMR_MAGIC_VALUE;
 	imr_layout->imr_state.header.imr_restore_vector = vector;
-	dcache_writeback_region(imr_layout, sizeof(*imr_layout));
+	dcache_writeback_region((__sparse_force void __sparse_cache *)imr_layout,
+				sizeof(*imr_layout));
 }
 #endif
 
 int platform_context_save(struct sof *sof)
 {
+#if CONFIG_IPC_MAJOR_4
+	ipc_get()->task_mask |= IPC_TASK_POWERDOWN;
+#endif
+
 #if CONFIG_CAVS_IMR_D3_PERSISTENT
 	/*
 	 * Both runtime PM and S2Idle suspend works on APL, while S3 ([deep])

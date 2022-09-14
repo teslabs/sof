@@ -6,13 +6,13 @@
 
 #include <sof/common.h>
 #include <sof/drivers/dw-dma.h>
-#include <sof/drivers/interrupt.h>
+#include <rtos/interrupt.h>
 #include <sof/lib/dma.h>
 #include <sof/lib/io.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/shim.h>
 #include <sof/sof.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 
 static const struct dw_drv_plat_data dmac0 = {
 	.chan[0] = {

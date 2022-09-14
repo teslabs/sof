@@ -6,18 +6,20 @@
 // Author: Paul Olaru <paul.olaru@nxp.com>
 
 #include <sof/common.h>
-#include <sof/drivers/interrupt.h>
+#include <rtos/interrupt.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/io.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/uuid.h>
 #include <sof/list.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(irq_imx, CONFIG_SOF_LOG_LEVEL);
 
 /* fa00558c-d653-4851-a03a-b21f125a9524 */
 DECLARE_SOF_UUID("irq-imx", irq_imx_uuid, 0xfa00558c, 0xd653, 0x4851,

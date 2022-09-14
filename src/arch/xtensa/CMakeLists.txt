@@ -53,12 +53,21 @@ if(CONFIG_RENOIR)
 	set(platform_folder amd/renoir)
 	set(platform_ld_script renoir.x)
 endif()
+
+if(CONFIG_REMBRANDT)
+	set(platform_folder amd/rembrandt)
+	set(platform_ld_script rembrandt.x)
+endif()
 # includes
 
+# None of these should be included if Zephyr strict headers are used.
+if (NOT CONFIG_SOF_ZEPHYR_STRICT_HEADERS)
 target_include_directories(sof_options INTERFACE
 	${PROJECT_SOURCE_DIR}/src/arch/xtensa/include
 	${PROJECT_SOURCE_DIR}/src/arch/xtensa/xtos
+	${PROJECT_SOURCE_DIR}/xtos/include
 )
+endif()
 
 target_include_directories(sof_options INTERFACE ${PROJECT_SOURCE_DIR}/src/platform/${platform_folder}/include)
 
@@ -457,7 +466,7 @@ if(MEU_PATH OR DEFINED MEU_NO_SIGN) # Don't sign with rimage
 			-s ${MEU_OFFSET}
 			-k ${RIMAGE_PRIVATE_KEY}
 			-i ${RIMAGE_IMR_TYPE}
-			-f ${SOF_MAJOR}.${SOF_MINOR}
+			-f ${SOF_MAJOR}.${SOF_MINOR}.${SOF_MICRO}
 			-b ${SOF_BUILD}
 			-e
 			${bootloader_binary_path}
@@ -498,7 +507,7 @@ else() # sign with rimage
 			-c "${PROJECT_SOURCE_DIR}/rimage/config/${fw_name}.toml"
 			-k ${RIMAGE_PRIVATE_KEY}
 			-i ${RIMAGE_IMR_TYPE}
-			-f ${SOF_MAJOR}.${SOF_MINOR}
+			-f ${SOF_MAJOR}.${SOF_MINOR}.${SOF_MICRO}
 			-b ${SOF_BUILD}
 			-e
 			${bootloader_binary_path}
@@ -542,7 +551,7 @@ set(UNSIGNED_RI         byt cht hsw bdw sue)
 # NXP
 list(APPEND UNSIGNED_RI imx8 imx8x imx8m imx8ulp)
 # AMD
-list(APPEND UNSIGNED_RI rn)
+list(APPEND UNSIGNED_RI rn rmb)
 # Mediatek
 list(APPEND UNSIGNED_RI mt8186 mt8195)
 

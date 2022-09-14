@@ -8,8 +8,8 @@
 
 #include <sof/audio/component.h>
 #include <sof/drivers/acp_dai_dma.h>
-#include <sof/drivers/interrupt.h>
-#include <sof/lib/alloc.h>
+#include <rtos/interrupt.h>
+#include <rtos/alloc.h>
 #include <sof/lib/dai.h>
 #include <sof/lib/dma.h>
 #include <sof/lib/uuid.h>
@@ -40,6 +40,12 @@ static int spdai_trigger(struct dai *dai, int cmd, int direction)
 static int spdai_probe(struct dai *dai)
 {
 	/* TODO */
+	return 0;
+}
+
+static int spdai_remove(struct dai *dai)
+{
+	/* TODO*/
 	return 0;
 }
 
@@ -82,6 +88,7 @@ const struct dai_driver acp_spdai_driver = {
 		.trigger		= spdai_trigger,
 		.set_config		= spdai_set_config,
 		.probe			= spdai_probe,
+		.remove			= spdai_remove,
 		.get_fifo		= spdai_get_fifo,
 		.get_handshake		= spdai_get_handshake,
 		.get_hw_params          = spdai_get_hw_params,

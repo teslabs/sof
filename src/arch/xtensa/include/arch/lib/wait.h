@@ -9,8 +9,8 @@
 #define __ARCH_LIB_WAIT_H__
 
 #include <sof/debug/panic.h>
-#include <sof/drivers/interrupt.h>
-#include <sof/lib/clk.h>
+#include <rtos/interrupt.h>
+#include <rtos/clk.h>
 #include <ipc/trace.h>
 
 #include <xtensa/xtruntime.h>

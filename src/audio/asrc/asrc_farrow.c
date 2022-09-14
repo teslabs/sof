@@ -8,12 +8,14 @@
 #include <sof/debug/panic.h>
 #include <sof/math/numbers.h>
 #include <sof/platform.h>
-#include <sof/string.h>
+#include <rtos/string.h>
 #include <sof/trace/trace.h>
 #include <sof/audio/format.h>
 #include <user/trace.h>
 #include <sof/audio/asrc/asrc_config.h>
 #include <sof/audio/asrc/asrc_farrow.h>
+
+LOG_MODULE_DECLARE(asrc, CONFIG_SOF_LOG_LEVEL);
 
 #define CONVERT_COEFF(x) ((int32_t)(x))
 

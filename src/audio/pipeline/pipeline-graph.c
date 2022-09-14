@@ -9,12 +9,13 @@
 #include <sof/audio/component_ext.h>
 #include <sof/audio/pipeline.h>
 #include <sof/ipc/msg.h>
-#include <sof/drivers/interrupt.h>
+#include <rtos/interrupt.h>
 #include <sof/lib/mm_heap.h>
 #include <sof/lib/uuid.h>
+#include <sof/compiler_attributes.h>
 #include <sof/list.h>
-#include <sof/spinlock.h>
-#include <sof/string.h>
+#include <rtos/spinlock.h>
+#include <rtos/string.h>
 #include <ipc/header.h>
 #include <ipc/stream.h>
 #include <ipc/topology.h>
@@ -22,6 +23,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(pipe, CONFIG_SOF_LOG_LEVEL);
 
 /* 4e934adb-b0ec-4d33-a086-c1022f921321 */
 DECLARE_SOF_RT_UUID("pipe", pipe_uuid, 0x4e934adb, 0xb0ec, 0x4d33,
@@ -144,19 +147,39 @@ struct pipeline *pipeline_new(uint32_t pipeline_id, uint32_t priority, uint32_t 
 	/* just for retrieving valid ipc_msg header */
 	ipc_build_stream_posn(&posn, SOF_IPC_STREAM_TRIG_XRUN, p->comp_id);
 
-	p->msg = ipc_msg_init(posn.rhdr.hdr.cmd, sizeof(posn));
-	if (!p->msg) {
-		pipe_err(p, "pipeline_new(): ipc_msg_init failed");
-		rfree(p);
-		return NULL;
+	if (posn.rhdr.hdr.size) {
+		p->msg = ipc_msg_init(posn.rhdr.hdr.cmd, posn.rhdr.hdr.size);
+		if (!p->msg) {
+			pipe_err(p, "pipeline_new(): ipc_msg_init failed");
+			rfree(p);
+			return NULL;
+		}
 	}
 
 	return p;
 }
 
+static void buffer_set_comp(struct comp_buffer *buffer, struct comp_dev *comp,
+			    int dir)
+{
+	struct comp_buffer __sparse_cache *buffer_c = buffer_acquire(buffer);
+
+	if (dir == PPL_CONN_DIR_COMP_TO_BUFFER)
+		buffer_c->source = comp;
+	else
+		buffer_c->sink = comp;
+
+	buffer_release(buffer_c);
+
+	/* The buffer might be marked as shared later, write back the cache */
+	if (!buffer->c.shared)
+		dcache_writeback_invalidate_region(uncache_to_cache(buffer), sizeof(*buffer));
+}
+
 int pipeline_connect(struct comp_dev *comp, struct comp_buffer *buffer,
 		     int dir)
 {
+	struct list_item *comp_list;
 	uint32_t flags;
 
 	if (dir == PPL_CONN_DIR_COMP_TO_BUFFER)
@@ -165,10 +188,19 @@ int pipeline_connect(struct comp_dev *comp, struct comp_buffer *buffer,
 		comp_info(comp, "connect buffer %d as source", buffer->id);
 
 	irq_local_disable(flags);
-	list_item_prepend(buffer_comp_list(buffer, dir),
-			  comp_buffer_list(comp, dir));
+	comp_list = comp_buffer_list(comp, dir);
+	/*
+	 * There can already be buffers on the target component list. If we just
+	 * link this buffer, we modify the first buffer's list header via
+	 * uncached alias, so its cached copy can later be written back,
+	 * overwriting the modified header. FIXME: this is still a problem with
+	 * different cores.
+	 */
+	if (!list_is_empty(comp_list))
+		dcache_writeback_invalidate_region(uncache_to_cache(comp_list->next),
+						   sizeof(struct list_item));
+	list_item_prepend(buffer_comp_list(buffer, dir), comp_list);
 	buffer_set_comp(buffer, comp, dir);
-	comp_writeback(comp);
 	irq_local_enable(flags);
 
 	return 0;
@@ -176,6 +208,7 @@ int pipeline_connect(struct comp_dev *comp, struct comp_buffer *buffer,
 
 void pipeline_disconnect(struct comp_dev *comp, struct comp_buffer *buffer, int dir)
 {
+	struct list_item *buf_list, *comp_list;
 	uint32_t flags;
 
 	if (dir == PPL_CONN_DIR_COMP_TO_BUFFER)
@@ -184,8 +217,23 @@ void pipeline_disconnect(struct comp_dev *comp, struct comp_buffer *buffer, int 
 		comp_info(comp, "disconnect buffer %d as source", buffer->id);
 
 	irq_local_disable(flags);
-	list_item_del(buffer_comp_list(buffer, dir));
-	comp_writeback(comp);
+	buf_list = buffer_comp_list(buffer, dir);
+	comp_list = comp_buffer_list(comp, dir);
+	/*
+	 * There can be more buffers linked together with this one, that will
+	 * still be staying on their respective pipelines and might get used via
+	 * their cached aliases. If we just unlink this buffer, we modify their
+	 * list header via uncached alias, so their cached copy can later be
+	 * written back, overwriting the modified header. FIXME: this is still a
+	 * problem with different cores.
+	 */
+	if (comp_list != buf_list->next)
+		dcache_writeback_invalidate_region(uncache_to_cache(buf_list->next),
+						   sizeof(struct list_item));
+	if (comp_list != buf_list->prev)
+		dcache_writeback_invalidate_region(uncache_to_cache(buf_list->prev),
+						   sizeof(struct list_item));
+	list_item_del(buf_list);
 	irq_local_enable(flags);
 }
 
@@ -361,89 +409,161 @@ int pipeline_for_each_comp(struct comp_dev *current,
 {
 	struct list_item *buffer_list = comp_buffer_list(current, dir);
 	struct list_item *clist;
-	struct comp_buffer *buffer;
-	struct comp_dev *buffer_comp;
 
 	/* run this operation further */
 	list_for_item(clist, buffer_list) {
-		buffer = buffer_from_list(clist, struct comp_buffer, dir);
+		struct comp_buffer *buffer = buffer_from_list(clist, struct comp_buffer, dir);
+		struct comp_buffer __sparse_cache *buffer_c;
+		struct comp_dev *buffer_comp;
+		int err = 0;
+
+		if (ctx->incoming == buffer)
+			continue;
 
 		/* don't go back to the buffer which already walked */
+		/*
+		 * Note, that this access must be performed unlocked via
+		 * uncached address. Trying to lock before checking the flag
+		 * understandably leads to a deadlock when this function is
+		 * called recursively from .comp_func() below. We do it in a
+		 * safe way: this flag must *only* be accessed in this function
+		 * only in these three cases: testing, setting and clearing.
+		 * Note, that it is also assumed that buffers aren't shared
+		 * across CPUs. See further comment below.
+		 */
+		dcache_writeback_invalidate_region(uncache_to_cache(buffer), sizeof(*buffer));
 		if (buffer->walking)
 			continue;
 
-		/* execute operation on buffer */
-		if (ctx->buff_func)
-			ctx->buff_func(buffer, ctx->buff_data);
-
 		buffer_comp = buffer_get_comp(buffer, dir);
 
+		buffer_c = buffer_acquire(buffer);
+
+		/* execute operation on buffer */
+		if (ctx->buff_func)
+			ctx->buff_func(buffer_c, ctx->buff_data);
+
 		/* don't go further if this component is not connected */
-		if (!buffer_comp ||
-		    (ctx->skip_incomplete && !buffer_comp->pipeline))
-			continue;
+		if (buffer_comp &&
+		    (!ctx->skip_incomplete || buffer_comp->pipeline) &&
+		    ctx->comp_func) {
+			buffer_c->walking = true;
+			buffer_release(buffer_c);
 
-		/* continue further */
-		if (ctx->comp_func) {
-			buffer = buffer_acquire(buffer);
-			buffer->walking = true;
-			buffer = buffer_release(buffer);
+			err = ctx->comp_func(buffer_comp, buffer,
+					     ctx, dir);
 
-			int err = ctx->comp_func(buffer_comp, buffer,
-						 ctx, dir);
-			buffer = buffer_acquire(buffer);
-			buffer->walking = false;
-			buffer = buffer_release(buffer);
-			if (err < 0 || err == PPL_STATUS_PATH_STOP)
-				return err;
+			buffer_c = buffer_acquire(buffer);
+			buffer_c->walking = false;
 		}
+
+		buffer_release(buffer_c);
+
+		if (err < 0 || err == PPL_STATUS_PATH_STOP)
+			return err;
 	}
 
 	return 0;
 }
 
-/* visit connected  pipeline to find the dai comp and latency */
-struct comp_dev *pipeline_get_dai_comp(uint32_t pipeline_id, uint32_t *latency)
+/* visit connected pipeline to find the dai comp */
+struct comp_dev *pipeline_get_dai_comp(uint32_t pipeline_id, int dir)
 {
-	struct ipc_comp_dev *sink;
+	struct ipc_comp_dev *crt;
+	struct ipc *ipc = ipc_get();
+
+	crt = ipc_get_ppl_comp(ipc, pipeline_id, dir);
+	while (crt) {
+		struct comp_buffer *buffer;
+		struct comp_dev *comp;
+		struct list_item *blist = comp_buffer_list(crt->cd, dir);
+
+		/* if buffer list is empty then we have found a DAI */
+		if (list_is_empty(blist))
+			return crt->cd;
+
+		buffer = buffer_from_list(blist->next, struct comp_buffer, dir);
+		comp = buffer_get_comp(buffer, dir);
+
+		/* buffer_comp is in another pipeline and it is not complete */
+		if (!comp->pipeline)
+			return NULL;
+
+		crt = ipc_get_ppl_comp(ipc, comp->pipeline->pipeline_id, dir);
+	}
+
+	return NULL;
+}
+
+#if CONFIG_IPC_MAJOR_4
+/* visit connected pipeline to find the dai comp and latency.
+ * This function walks down through a pipelines chain looking for the target dai component.
+ * Calculates the delay of each pipeline by determining the number of buffered blocks.
+ */
+struct comp_dev *pipeline_get_dai_comp_latency(uint32_t pipeline_id, uint32_t *latency)
+{
+	struct ipc_comp_dev *ipc_sink;
+	struct ipc_comp_dev *ipc_source;
+	struct comp_dev *source;
 	struct ipc *ipc = ipc_get();
 
 	*latency = 0;
 
-	sink = ipc_get_ppl_sink_comp(ipc, pipeline_id);
-	if (!sink)
+	/* Walks through the ipc component list and get source endpoint component of the given
+	 * pipeline.
+	 */
+	ipc_source = ipc_get_ppl_src_comp(ipc, pipeline_id);
+	if (!ipc_source)
 		return NULL;
+	source = ipc_source->cd;
 
-	while (sink) {
-		struct comp_dev *buff_comp;
+	/* Walks through the ipc component list and get sink endpoint component of the given
+	 * pipeline. This function returns the first sink. We assume that dai is connected to pin 0.
+	 */
+	ipc_sink = ipc_get_ppl_sink_comp(ipc, pipeline_id);
+	while (ipc_sink) {
 		struct comp_buffer *buffer;
+		uint64_t input_data, output_data;
+		struct ipc4_base_module_cfg input_base_cfg;
+		struct ipc4_base_module_cfg output_base_cfg;
+		const struct comp_driver *drv;
+		int ret;
 
-		*latency += sink->cd->pipeline->period;
-		/* dai is found */
-		if (list_is_empty(&sink->cd->bsink_list)) {
-			struct list_item *list;
+		/* Calculate pipeline latency */
+		input_data = comp_get_total_data_processed(source, 0, true);
+		output_data = comp_get_total_data_processed(ipc_sink->cd, 0, false);
+		if (!input_data || !output_data)
+			return NULL;
 
-			list = comp_buffer_list(sink->cd, PPL_DIR_UPSTREAM);
-			buffer = buffer_from_list(list->next, struct comp_buffer, PPL_DIR_UPSTREAM);
-			break;
-		}
+		drv = source->drv;
+		ret = drv->ops.get_attribute(source, COMP_ATTR_BASE_CONFIG, &input_base_cfg);
+		if (ret < 0)
+			return NULL;
 
-		buffer = buffer_from_list(comp_buffer_list(sink->cd, PPL_DIR_DOWNSTREAM)->next,
+		drv = ipc_sink->cd->drv;
+		ret = drv->ops.get_attribute(ipc_sink->cd, COMP_ATTR_BASE_CONFIG, &output_base_cfg);
+		if (ret < 0)
+			return NULL;
+
+		*latency += input_data / input_base_cfg.ibs - output_data / output_base_cfg.obs;
+
+		/* If the component doesn't have a sink buffer, this is a dai. */
+		if (list_is_empty(&ipc_sink->cd->bsink_list))
+			return ipc_sink->cd;
+
+		/* Get a component connected to our sink buffer - hop to a next pipeline */
+		buffer = buffer_from_list(comp_buffer_list(ipc_sink->cd, PPL_DIR_DOWNSTREAM)->next,
 					  struct comp_buffer, PPL_DIR_DOWNSTREAM);
-		buff_comp = buffer_get_comp(buffer, PPL_DIR_DOWNSTREAM);
+		source = buffer_get_comp(buffer, PPL_DIR_DOWNSTREAM);
 
 		/* buffer_comp is in another pipeline and it is not complete */
-		if (!buff_comp->pipeline)
+		if (!source->pipeline)
 			return NULL;
 
-		sink = ipc_get_ppl_sink_comp(ipc, buff_comp->pipeline->pipeline_id);
-
-		if (!sink)
-			return NULL;
+		/* Get a next sink component */
+		ipc_sink = ipc_get_ppl_sink_comp(ipc, source->pipeline->pipeline_id);
 	}
 
-	/* convert it to ms */
-	*latency /= 1000;
-
-	return sink->cd;
+	return NULL;
 }
+#endif

@@ -8,13 +8,13 @@
 
 #include <sof/compiler_info.h>
 #include <sof/debug/debug.h>
-#include <sof/drivers/interrupt.h>
+#include <rtos/interrupt.h>
 #include <sof/drivers/acp_dai_dma.h>
 #include <sof/ipc/driver.h>
-#include <sof/drivers/timer.h>
+#include <rtos/timer.h>
 #include <sof/fw-ready-metadata.h>
 #include <sof/lib/agent.h>
-#include <sof/lib/clk.h>
+#include <rtos/clk.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/dai.h>
 #include <sof/lib/dma.h>
@@ -31,6 +31,7 @@
 #include <ipc/header.h>
 #include <ipc/info.h>
 #include <kernel/abi.h>
+#include <kernel/ext_manifest.h>
 #include <sof_versions.h>
 #include <errno.h>
 #include <stdint.h>
@@ -59,6 +60,68 @@ static const struct sof_ipc_fw_ready ready
 		.abi_version = SOF_ABI_VERSION,
 	},
 	.flags = DEBUG_SET_FW_READY_FLAGS,
+};
+
+#define NUM_ACP_WINDOWS		6
+
+const struct ext_man_windows xsram_window
+		__aligned(EXT_MAN_ALIGN) __section(".fw_metadata") __unused = {
+	.hdr = {
+		.type = EXT_MAN_ELEM_WINDOW,
+		.elem_size = ALIGN_UP_COMPILE(sizeof(struct ext_man_windows), EXT_MAN_ALIGN),
+	},
+	.window = {
+		.ext_hdr	= {
+			.hdr.cmd = SOF_IPC_FW_READY,
+			.hdr.size = sizeof(struct sof_ipc_window),
+			.type   = SOF_IPC_EXT_WINDOW,
+		},
+		.num_windows    = NUM_ACP_WINDOWS,
+		.window = {
+			{
+				.type   = SOF_IPC_REGION_UPBOX,
+				.id     = 0,
+				.flags  = 0,
+				.size   = MAILBOX_DSPBOX_SIZE,
+				.offset = MAILBOX_DSPBOX_OFFSET,
+			},
+			{
+				.type   = SOF_IPC_REGION_DOWNBOX,
+				.id     = 0,
+				.flags  = 0,
+				.size   = MAILBOX_HOSTBOX_SIZE,
+				.offset = MAILBOX_HOSTBOX_OFFSET,
+			},
+			{
+				.type   = SOF_IPC_REGION_DEBUG,
+				.id     = 0,
+				.flags  = 0,
+				.size   = MAILBOX_DEBUG_SIZE,
+				.offset = MAILBOX_DEBUG_OFFSET,
+			},
+			{
+				.type   = SOF_IPC_REGION_TRACE,
+				.id     = 0,
+				.flags  = 0,
+				.size   = MAILBOX_TRACE_SIZE,
+				.offset = MAILBOX_TRACE_OFFSET,
+			},
+			{
+				.type   = SOF_IPC_REGION_STREAM,
+				.id     = 0,
+				.flags  = 0,
+				.size   = MAILBOX_STREAM_SIZE,
+				.offset = MAILBOX_STREAM_OFFSET,
+			},
+			{
+				.type   = SOF_IPC_REGION_EXCEPTION,
+				.id     = 0,
+				.flags  = 0,
+				.size   = MAILBOX_EXCEPTION_SIZE,
+				.offset = MAILBOX_EXCEPTION_OFFSET,
+			},
+		},
+	},
 };
 
 static SHARED_DATA struct timer timer_shared = {
@@ -134,4 +197,9 @@ int platform_boot_complete(uint32_t boot_message)
 int platform_context_save(struct sof *sof)
 {
 	return 0;
+}
+
+void platform_wait_for_interrupt(int level)
+{
+	arch_wait_for_interrupt(level);
 }

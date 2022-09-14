@@ -5,14 +5,14 @@
 // Author: Keyon Jie <yang.jie@linux.intel.com>
 //         Liam Girdwood <liam.r.girdwood@linux.intel.com>
 
-#include <sof/atomic.h>
+#include <rtos/atomic.h>
 #include <sof/audio/component.h>
-#include <sof/bit.h>
+#include <rtos/bit.h>
 #include <sof/drivers/hda-dma.h>
-#include <sof/drivers/interrupt.h>
-#include <sof/drivers/timer.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/clk.h>
+#include <rtos/interrupt.h>
+#include <rtos/timer.h>
+#include <rtos/alloc.h>
+#include <rtos/clk.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/dai.h>
 #include <sof/lib/dma.h>
@@ -20,7 +20,7 @@
 #include <sof/lib/notifier.h>
 #include <sof/platform.h>
 #include <sof/schedule/schedule.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <sof/trace/trace.h>
 #include <ipc/topology.h>
 #include <user/trace.h>
@@ -99,6 +99,8 @@
  * 8. FW clears DGCS.GEN bit for host DMA during host component reset and checks DGCS.GBUSY bit
  *    to ensure DMA is idle
  */
+
+LOG_MODULE_REGISTER(hda_dma, CONFIG_SOF_LOG_LEVEL);
 
 /* ee12fa71-4579-45d7-bde2-b32c6893a122 */
 DECLARE_SOF_UUID("hda-dma", hda_dma_uuid, 0xee12fa71, 0x4579, 0x45d7,
@@ -320,10 +322,10 @@ static inline int hda_dma_is_buffer_empty(struct dma_chan_data *chan)
 
 static int hda_dma_wait_for_buffer_full(struct dma_chan_data *chan)
 {
-	uint64_t deadline = k_cycle_get_64() + k_us_to_cyc_ceil64(HDA_DMA_TIMEOUT);
+	uint64_t deadline = sof_cycle_get_64() + k_us_to_cyc_ceil64(HDA_DMA_TIMEOUT);
 
 	while (!hda_dma_is_buffer_full(chan)) {
-		if (deadline < k_cycle_get_64()) {
+		if (deadline < sof_cycle_get_64()) {
 			/* safe check in case we've got preempted after read */
 			if (hda_dma_is_buffer_full(chan))
 				return 0;
@@ -341,10 +343,10 @@ static int hda_dma_wait_for_buffer_full(struct dma_chan_data *chan)
 
 static int hda_dma_wait_for_buffer_empty(struct dma_chan_data *chan)
 {
-	uint64_t deadline = k_cycle_get_64() + k_us_to_cyc_ceil64(HDA_DMA_TIMEOUT);
+	uint64_t deadline = sof_cycle_get_64() + k_us_to_cyc_ceil64(HDA_DMA_TIMEOUT);
 
 	while (!hda_dma_is_buffer_empty(chan)) {
-		if (deadline < k_cycle_get_64()) {
+		if (deadline < sof_cycle_get_64()) {
 			/* safe check in case we've got preempted after read */
 			if (hda_dma_is_buffer_empty(chan))
 				return 0;
@@ -724,7 +726,7 @@ static int hda_dma_status(struct dma_chan_data *channel,
 	status->state = channel->status;
 	status->r_pos = dma_chan_reg_read(channel, DGBRP);
 	status->w_pos = dma_chan_reg_read(channel, DGBWP);
-	status->timestamp = k_cycle_get_64();
+	status->timestamp = sof_cycle_get_64();
 
 	return 0;
 }
@@ -883,28 +885,25 @@ static int hda_dma_probe(struct dma *dma)
 	if (!dma->chan) {
 		tr_err(&hdma_tr, "hda-dmac: %d channels alloc failed",
 		       dma->plat_data.id);
+		return -ENOMEM;
+	}
+
+	hda_chan = rzalloc(SOF_MEM_ZONE_RUNTIME_SHARED, 0, SOF_MEM_CAPS_RAM,
+			   sizeof(struct hda_chan_data) * dma->plat_data.channels);
+	if (!hda_chan) {
+		tr_err(&hdma_tr, "hda-dma: %d private data alloc failed",
+		       dma->plat_data.id);
 		goto out;
 	}
 
 	/* init channel status */
-	chan = dma->chan;
-
-	for (i = 0; i < dma->plat_data.channels; i++, chan++) {
+	for (i = 0, chan = dma->chan; i < dma->plat_data.channels; i++, chan++) {
 		chan->dma = dma;
 		chan->index = i;
 		chan->status = COMP_STATE_INIT;
 		chan->core = DMA_CORE_INVALID;
 
-		hda_chan = rzalloc(SOF_MEM_ZONE_RUNTIME_SHARED, 0,
-				   SOF_MEM_CAPS_RAM,
-				   sizeof(struct hda_chan_data));
-		if (!hda_chan) {
-			tr_err(&hdma_tr, "hda-dma: %d channel %d private data alloc failed",
-			       dma->plat_data.id, i);
-			goto out;
-		}
-
-		dma_chan_set_data(chan, hda_chan);
+		dma_chan_set_data(chan, hda_chan + i);
 	}
 
 	/* init number of channels draining */
@@ -913,24 +912,17 @@ static int hda_dma_probe(struct dma *dma)
 	return 0;
 
 out:
-	if (dma->chan) {
-		for (i = 0; i < dma->plat_data.channels; i++)
-			rfree(dma_chan_get_data(&dma->chan[i]));
-		rfree(dma->chan);
-		dma->chan = NULL;
-	}
+	rfree(dma->chan);
+	dma->chan = NULL;
 
 	return -ENOMEM;
 }
 
 static int hda_dma_remove(struct dma *dma)
 {
-	int i;
-
 	tr_info(&hdma_tr, "hda-dmac :%d -> remove", dma->plat_data.id);
 
-	for (i = 0; i < dma->plat_data.channels; i++)
-		rfree(dma_chan_get_data(&dma->chan[i]));
+	rfree(dma_chan_get_data(&dma->chan[0]));
 
 	rfree(dma->chan);
 	dma->chan = NULL;

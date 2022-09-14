@@ -22,7 +22,7 @@
 #include <sof/debug/panic.h>
 #include <sof/drivers/idc.h>
 #include <sof/list.h>
-#include <sof/lib/alloc.h>
+#include <rtos/alloc.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/dai.h>
 #include <sof/lib/memory.h>
@@ -128,6 +128,8 @@ enum {
 #define COMP_ATTR_COPY_TYPE	0	/**< Comp copy type attribute */
 #define COMP_ATTR_HOST_BUFFER	1	/**< Comp host buffer attribute */
 #define COMP_ATTR_COPY_DIR	2	/**< Comp copy direction */
+#define COMP_ATTR_VDMA_INDEX	3	/**< Comp index of the virtual DMA at the gateway. */
+#define COMP_ATTR_BASE_CONFIG	4	/**< Component base config */
 /** @}*/
 
 /** \name Trace macros
@@ -152,6 +154,26 @@ enum {
 /** \brief Retrieves subid (comp id) from the component device */
 #define trace_comp_get_subid(comp_p) ((comp_p)->ipc_config.id)
 
+#if defined(__ZEPHYR__) && defined(CONFIG_ZEPHYR_LOG)
+/* class (driver) level (no device object) tracing */
+#define comp_cl_err(drv_p, __e, ...) LOG_ERR(__e, ##__VA_ARGS__)
+
+#define comp_cl_warn(drv_p, __e, ...) LOG_WRN(__e, ##__VA_ARGS__)
+
+#define comp_cl_info(drv_p, __e, ...) LOG_INF(__e, ##__VA_ARGS__)
+
+#define comp_cl_dbg(drv_p, __e, ...) LOG_DBG(__e, ##__VA_ARGS__)
+
+/* device level tracing */
+#define comp_err(comp_p, __e, ...) LOG_ERR(__e, ##__VA_ARGS__)
+
+#define comp_warn(comp_p, __e, ...) LOG_WRN(__e, ##__VA_ARGS__)
+
+#define comp_info(comp_p, __e, ...) LOG_INF(__e, ##__VA_ARGS__)
+
+#define comp_dbg(comp_p, __e, ...) LOG_DBG(__e, ##__VA_ARGS__)
+
+#else
 /* class (driver) level (no device object) tracing */
 
 /** \brief Trace error message from component driver (no comp instance) */
@@ -208,9 +230,16 @@ enum {
 	trace_dev_dbg(trace_comp_get_tr_ctx, trace_comp_get_id,		\
 		      trace_comp_get_subid, comp_p, __e, ##__VA_ARGS__)
 
+#endif /* #if defined(__ZEPHYR__) && defined(CONFIG_ZEPHYR_LOG) */
+
 #define comp_perf_info(pcd, comp_p)					\
-	comp_info(comp_p, "perf comp_copy peak plat %d cpu %d",		\
+	comp_info(comp_p, "perf comp_copy peak plat %u cpu %u",		\
 		  (uint32_t)((pcd)->plat_delta_peak),			\
+		  (uint32_t)((pcd)->cpu_delta_peak))
+
+#define comp_perf_avg_info(pcd, comp_p)					\
+	comp_info(comp_p, "perf comp_copy cpu avg %u (current peak %u)",\
+		  (uint32_t)((pcd)->cpu_delta_sum),			\
 		  (uint32_t)((pcd)->cpu_delta_peak))
 
 /** @}*/
@@ -341,8 +370,6 @@ struct comp_ops {
 	 *
 	 * Resets the component state and any hw_params to default component
 	 * state. Should also free any resources acquired during hw_params.
-	 * TODO: Some components are not compliant here wrt reset(). Fix this
-	 * in v1.8.
 	 */
 	int (*reset)(struct comp_dev *dev);
 
@@ -467,6 +494,15 @@ struct comp_ops {
 				bool last_block,
 				uint32_t data_offset,
 				char *data);
+
+	/**
+	 * Returns total data processed in number bytes.
+	 * @param dev Component device
+	 * @param stream_no Index of input/output stream
+	 * @param input Selects between input (true) or output (false) stream direction
+	 * @return total data processed if succeeded, 0 otherwise.
+	 */
+	uint64_t (*get_total_data_processed)(struct comp_dev *dev, uint32_t stream_no, bool input);
 };
 
 /**
@@ -508,7 +544,6 @@ struct comp_dev {
 
 	/* runtime */
 	uint16_t state;		   /**< COMP_STATE_ */
-	uint64_t position;	   /**< component rendering position */
 	uint32_t frames;	   /**< number of frames we copy to sink */
 	struct pipeline *pipeline; /**< pipeline we belong to */
 
@@ -536,6 +571,7 @@ struct comp_dev {
 
 	/* common runtime configuration for downstream/upstream */
 	uint32_t direction;	/**< enum sof_ipc_stream_direction */
+	bool direction_set; /**< flag indicating that the direction has been set */
 
 	const struct comp_driver *drv;	/**< driver */
 
@@ -612,9 +648,10 @@ static inline struct comp_dev *comp_alloc(const struct comp_driver *drv,
 	struct comp_dev *dev = NULL;
 
 	/*
-	 * use uncached address at the moment to rule out multi-core failures,
-	 * may need to switch to the latest coherence API for performance
-	 * improvement later.
+	 * Use uncached address everywhere to access components to rule out
+	 * multi-core failures. In the future we might decide to switch over to
+	 * the latest coherence API for performance. In that case components
+	 * will be acquired for cached access and released afterwards.
 	 */
 	dev = rzalloc(SOF_MEM_ZONE_RUNTIME_SHARED, 0, SOF_MEM_CAPS_RAM, bytes);
 	if (!dev)
@@ -642,7 +679,7 @@ static inline struct comp_dev *comp_alloc(const struct comp_driver *drv,
  * @return Private data.
  */
 #define comp_get_drvdata(c) \
-	c->priv_data
+	(c->priv_data)
 
 #if defined UNIT_TEST || defined __ZEPHYR__
 #define DECLARE_MODULE(init)
@@ -655,7 +692,7 @@ static inline struct comp_dev *comp_alloc(const struct comp_driver *drv,
  *	DECLARE_MODULE(sys_*_init);
  */
 #define DECLARE_MODULE(init) __attribute__((__used__)) \
-	__section(".module_init") static void(*f##init)(void) = init
+	__section(".initcall") static void(*f##init)(void) = init
 #endif
 
 /** \name Component registration
@@ -736,9 +773,11 @@ static inline void component_set_nearest_period_frames(struct comp_dev *current,
  * @param copy_bytes Requested size of data to be available.
  */
 static inline void comp_underrun(struct comp_dev *dev,
-				 struct comp_buffer *source,
+				 struct comp_buffer __sparse_cache *source,
 				 uint32_t copy_bytes)
 {
+	LOG_MODULE_DECLARE(component, CONFIG_SOF_LOG_LEVEL);
+
 	int32_t bytes = (int32_t)audio_stream_get_avail_bytes(&source->stream) -
 			copy_bytes;
 
@@ -756,9 +795,11 @@ static inline void comp_underrun(struct comp_dev *dev,
  * @param sink Sink buffer.
  * @param copy_bytes Requested size of free space to be available.
  */
-static inline void comp_overrun(struct comp_dev *dev, struct comp_buffer *sink,
+static inline void comp_overrun(struct comp_dev *dev, struct comp_buffer __sparse_cache *sink,
 				uint32_t copy_bytes)
 {
+	LOG_MODULE_DECLARE(component, CONFIG_SOF_LOG_LEVEL);
+
 	int32_t bytes = (int32_t)copy_bytes -
 			audio_stream_get_free_bytes(&sink->stream);
 
@@ -779,8 +820,22 @@ static inline void comp_overrun(struct comp_dev *dev, struct comp_buffer *sink,
  * @param[in] sink Sink buffer.
  * @param[out] cl Current copy limits.
  */
-void comp_get_copy_limits(struct comp_buffer *source, struct comp_buffer *sink,
+void comp_get_copy_limits(struct comp_buffer __sparse_cache *source,
+			  struct comp_buffer __sparse_cache *sink,
 			  struct comp_copy_limits *cl);
+
+/**
+ * Computes source to sink copy operation boundaries including maximum number
+ * of frames aligned with requirement that can be transferred (data available in
+ * source vs. free space available in sink).
+ *
+ * @param[in] source Buffer of source.
+ * @param[in] sink Buffer of sink.
+ * @param[out] cl Current copy limits.
+ */
+void comp_get_copy_limits_frame_aligned(const struct comp_buffer __sparse_cache *source,
+					const struct comp_buffer __sparse_cache *sink,
+					struct comp_copy_limits *cl);
 
 /**
  * Version of comp_get_copy_limits that locks both buffers to guarantee
@@ -795,33 +850,40 @@ void comp_get_copy_limits_with_lock(struct comp_buffer *source,
 				    struct comp_buffer *sink,
 				    struct comp_copy_limits *cl)
 {
-	source = buffer_acquire(source);
-	sink = buffer_acquire(sink);
+	struct comp_buffer __sparse_cache *source_c, *sink_c;
 
-	comp_get_copy_limits(source, sink, cl);
+	source_c = buffer_acquire(source);
+	sink_c = buffer_acquire(sink);
 
-	source = buffer_release(source);
-	sink = buffer_release(sink);
+	comp_get_copy_limits(source_c, sink_c, cl);
+
+	buffer_release(sink_c);
+	buffer_release(source_c);
 }
 
 /**
- * Invalidates component to ensure current state and params readout.
- * @param dev Component to invalidate
+ * Version of comp_get_copy_limits_with_lock_frame_aligned that locks both
+ * buffers to guarantee consistent state readings and the frames aligned with
+ * the requirement.
+ *
+ * @param[in] source Buffer of source.
+ * @param[in] sink Buffer of sink
+ * @param[out] cl Current copy limits.
  */
-static inline void comp_invalidate(struct comp_dev *dev)
+static inline
+void comp_get_copy_limits_with_lock_frame_aligned(struct comp_buffer *source,
+						  struct comp_buffer *sink,
+						  struct comp_copy_limits *cl)
 {
-	if (!dev->is_shared)
-		dcache_invalidate_region(dev, sizeof(struct comp_dev));
-}
+	struct comp_buffer __sparse_cache *source_c, *sink_c;
 
-/**
- * Writeback component to ensure current state and params readout.
- * @param dev Component to writeback
- */
-static inline void comp_writeback(struct comp_dev *dev)
-{
-	if (!dev->is_shared)
-		dcache_writeback_region(dev, sizeof(struct comp_dev));
+	source_c = buffer_acquire(source);
+	sink_c = buffer_acquire(sink);
+
+	comp_get_copy_limits_frame_aligned(source_c, sink_c, cl);
+
+	buffer_release(sink_c);
+	buffer_release(source_c);
 }
 
 /**
@@ -832,21 +894,18 @@ static inline void comp_writeback(struct comp_dev *dev)
  */
 static inline int comp_get_state(struct comp_dev *req_dev, struct comp_dev *dev)
 {
-	/* we should not invalidate data when components are on the same
-	 * core, because we could invalidate data not previously writebacked
-	 */
-	if (req_dev->ipc_config.core != dev->ipc_config.core)
-		comp_invalidate(dev);
-
 	return dev->state;
 }
 
 /**
+ * Warning: duplicate declaration in topology.h
+ *
  * Called by component in  params() function in order to set and update some of
  * downstream (playback) or upstream (capture) buffer parameters with pcm
  * parameters. There is a possibility to specify which of parameters won't be
  * overwritten (e.g. SRC component should not overwrite rate parameter, because
  * it is able to change it).
+ *
  * @param dev Component device
  * @param flag Specifies which parameter should not be updated
  * @param params pcm params

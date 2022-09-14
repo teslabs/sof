@@ -12,7 +12,7 @@
 
 #include <cavs/mem_window.h>
 #include <sof/lib/memory.h>
-#include <sof/lib/alloc.h>
+#include <rtos/alloc.h>
 #include <sof/lib/io.h>
 #include <sof/lib/shim.h>
 
@@ -25,7 +25,7 @@ static inline void memory_window_init(uint32_t index,
 	io_reg_write(DMWBA(index), base | wnd_flags);
 	if (init_flags & MEM_WND_INIT_CLEAR) {
 		bzero((void *)zero_base, zero_size);
-		dcache_writeback_region((void *)zero_base, zero_size);
+		dcache_writeback_region((__sparse_force void __sparse_cache *)zero_base, zero_size);
 	}
 }
 

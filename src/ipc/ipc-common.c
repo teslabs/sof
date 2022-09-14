@@ -15,14 +15,14 @@
 #include <sof/ipc/msg.h>
 #include <sof/ipc/driver.h>
 #include <sof/ipc/schedule.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/cache.h>
+#include <rtos/alloc.h>
+#include <rtos/cache.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/mailbox.h>
 #include <sof/list.h>
 #include <sof/platform.h>
 #include <sof/sof.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <ipc/dai.h>
 #include <ipc/header.h>
 #include <ipc/stream.h>
@@ -31,6 +31,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(ipc, CONFIG_SOF_LOG_LEVEL);
 
 /* be60f97d-78df-4796-a0ee-435cb56b720a */
 DECLARE_SOF_UUID("ipc", ipc_uuid, 0xbe60f97d, 0x78df, 0x4796,
@@ -51,7 +53,7 @@ int ipc_process_on_core(uint32_t core, bool blocking)
 	}
 
 	/* The other core will write there its response */
-	dcache_invalidate_region((void *)MAILBOX_HOSTBOX_BASE,
+	dcache_invalidate_region((__sparse_force void __sparse_cache *)MAILBOX_HOSTBOX_BASE,
 				 ((struct sof_ipc_cmd_hdr *)ipc->comp_data)->size);
 
 	/*
@@ -97,8 +99,7 @@ struct ipc_comp_dev *ipc_get_comp_by_id(struct ipc *ipc, uint32_t id)
 	return NULL;
 }
 
-struct ipc_comp_dev *ipc_get_comp_by_ppl_id(struct ipc *ipc, uint16_t type,
-					    uint32_t ppl_id)
+struct ipc_comp_dev *ipc_get_comp_by_ppl_id(struct ipc *ipc, uint16_t type, uint32_t ppl_id)
 {
 	struct ipc_comp_dev *icd;
 	struct list_item *clist;
@@ -121,55 +122,42 @@ struct ipc_comp_dev *ipc_get_comp_by_ppl_id(struct ipc *ipc, uint16_t type,
 	return NULL;
 }
 
-struct ipc_comp_dev *ipc_get_ppl_comp(struct ipc *ipc,
-				      uint32_t pipeline_id, int dir)
+/* Walks through the list of components looking for a sink/source endpoint component
+ * of the given pipeline
+ */
+struct ipc_comp_dev *ipc_get_ppl_comp(struct ipc *ipc, uint32_t pipeline_id, int dir)
 {
 	struct ipc_comp_dev *icd;
 	struct comp_buffer *buffer;
 	struct comp_dev *buff_comp;
 	struct list_item *clist;
+	struct ipc_comp_dev *next_ppl_icd = NULL;
 
-	/* first try to find the module in the pipeline */
 	list_for_item(clist, &ipc->comp_list) {
 		icd = container_of(clist, struct ipc_comp_dev, list);
-		if (icd->type != COMP_TYPE_COMPONENT) {
+		if (icd->type != COMP_TYPE_COMPONENT)
 			continue;
-		}
 
-		if (!cpu_is_me(icd->core)) {
-			continue;
-		}
-
-		if (dev_comp_pipe_id(icd->cd) == pipeline_id &&
-		    list_is_empty(comp_buffer_list(icd->cd, dir)))
-			return icd;
-
-	}
-
-	/* it's connected pipeline, so find the connected module */
-	list_for_item(clist, &ipc->comp_list) {
-		icd = container_of(clist, struct ipc_comp_dev, list);
-		if (icd->type != COMP_TYPE_COMPONENT) {
-			continue;
-		}
-
-		if (!cpu_is_me(icd->core)) {
-			continue;
-		}
-
+		/* first try to find the module in the pipeline */
 		if (dev_comp_pipe_id(icd->cd) == pipeline_id) {
-			buffer = buffer_from_list
-					(comp_buffer_list(icd->cd, dir)->next,
-					 struct comp_buffer, dir);
-			buff_comp = buffer_get_comp(buffer, dir);
-			if (buff_comp &&
-			    dev_comp_pipe_id(buff_comp) != pipeline_id)
+			struct list_item *buffer_list = comp_buffer_list(icd->cd, dir);
+
+			/* The component has no buffer in the given direction */
+			if (list_is_empty(buffer_list))
 				return icd;
+
+			/* it's connected pipeline, so find the connected module */
+			buffer = buffer_from_list(buffer_list->next, struct comp_buffer, dir);
+			buff_comp = buffer_get_comp(buffer, dir);
+
+			/* Next component is placed on another pipeline */
+			if (buff_comp && dev_comp_pipe_id(buff_comp) != pipeline_id)
+				next_ppl_icd = icd;
 		}
 
 	}
 
-	return NULL;
+	return next_ppl_icd;
 }
 
 void ipc_send_queued_msg(void)
@@ -179,6 +167,9 @@ void ipc_send_queued_msg(void)
 	k_spinlock_key_t key;
 
 	key = k_spin_lock(&ipc->lock);
+
+	if (ipc_get()->pm_prepare_D3)
+		goto out;
 
 	/* any messages to send ? */
 	if (list_is_empty(&ipc->msg_list))
@@ -194,6 +185,19 @@ out:
 	k_spin_unlock(&ipc->lock, key);
 }
 
+static void schedule_ipc_worker(void)
+{
+	/*
+	 * note: in XTOS builds, this is handled in
+	 * task_main_primary_core()
+	 */
+#ifdef __ZEPHYR__
+	struct ipc *ipc = ipc_get();
+
+	k_work_schedule(&ipc->z_delayed_work, K_USEC(IPC_PERIOD_USEC));
+#endif
+}
+
 void ipc_msg_send(struct ipc_msg *msg, void *data, bool high_priority)
 {
 	struct ipc *ipc = ipc_get();
@@ -202,8 +206,9 @@ void ipc_msg_send(struct ipc_msg *msg, void *data, bool high_priority)
 
 	key = k_spin_lock(&ipc->lock);
 
-	/* copy mailbox data to message */
-	if (msg->tx_size > 0 && msg->tx_size < SOF_IPC_MSG_MAX_SIZE) {
+	/* copy mailbox data to message if not already copied */
+	if ((msg->tx_size > 0 && msg->tx_size < SOF_IPC_MSG_MAX_SIZE) &&
+	    msg->tx_data != data) {
 		ret = memcpy_s(msg->tx_data, msg->tx_size, data, msg->tx_size);
 		assert(!ret);
 	}
@@ -223,9 +228,28 @@ void ipc_msg_send(struct ipc_msg *msg, void *data, bool high_priority)
 			list_item_append(&msg->list, &ipc->msg_list);
 	}
 
+	schedule_ipc_worker();
+
 out:
 	k_spin_unlock(&ipc->lock, key);
 }
+
+#ifdef __ZEPHYR__
+static void ipc_work_handler(struct k_work *work)
+{
+	struct ipc *ipc = ipc_get();
+	k_spinlock_key_t key;
+
+	ipc_send_queued_msg();
+
+	key = k_spin_lock(&ipc->lock);
+
+	if (!list_is_empty(&ipc->msg_list) && !ipc->pm_prepare_D3)
+		schedule_ipc_worker();
+
+	k_spin_unlock(&ipc->lock, key);
+}
+#endif
 
 void ipc_schedule_process(struct ipc *ipc)
 {
@@ -244,6 +268,10 @@ int ipc_init(struct sof *sof)
 	k_spinlock_init(&sof->ipc->lock);
 	list_init(&sof->ipc->msg_list);
 	list_init(&sof->ipc->comp_list);
+
+#ifdef __ZEPHYR__
+	k_work_init_delayable(&sof->ipc->z_delayed_work, ipc_work_handler);
+#endif
 
 	return platform_ipc_init(sof->ipc);
 }

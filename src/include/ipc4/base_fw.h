@@ -44,17 +44,6 @@
 /* Max pipeline count supported by ipc4 */
 #define IPC4_MAX_PPL_COUNT 16
 
-enum ipc4_basefw_properties {
-	IPC4_FW_VERSION,	/**< Firmware version */
-	IPC4_DSP_CORES,	/**< dsp cores count in audio subsystem */
-	IPC4_MEM_PAGE_SIZE,	/**< memory page size */
-	IPC4_TOTAL_PHYS_MEM_PAGES,	/**< total memory in page size */
-	IPC4_DL_MAILBOX_SIZE,	/**< download mailbox size */
-	IPC4_UL_MAILBOX_SIZE,	/**< uplaod mailbox size */
-	IPC4_TRACE_LOG_SIZE,	/**< trace log buffer size */
-	IPC4_MAX_PPL_CNT	/**< max pipleine count */
-};
-
 enum ipc4_basefw_params {
 	/* Use LARGE_CONFIG_GET to retrieve fw properties as TLV structure
 	 * with typeof AdspProperties.
@@ -634,3 +623,32 @@ enum ipc4_alh_version {
 	IPC4_ALH_NO_SUPPORT,
 	IPC4_ALH_CAVS_1_8 = 0x10000,
 };
+
+struct ipc4_log_state_info {
+	/*
+	 * Specifies how frequently FW sends Log Buffer Status
+	 * notification for new entries in case the usual notification
+	 * sending criteria are not met (half of the buffer is full). The
+	 * parameter is specified in number of system ticks.
+	 */
+	uint32_t  aging_timer_period;
+
+	/*
+	 * Specifies the latency of logging 'dropped log entries'
+	 * information after the content is consumed by the driver but no
+	 * new log entry appears (which would trigger logging 'dropped
+	 * entries' as well). The parameter is specified in number of
+	 * system ticks.
+	 */
+	uint32_t  fifo_full_timer_period;
+
+	/* 0 if logging is disabled, otherwise enabled */
+	uint32_t  enable;
+
+	/*
+	 * Logging mask of priorities and components for all
+	 * supported providers. Nth entry in array gives priorities and
+	 * components mask for Nth provider (library).
+	 */
+	uint32_t logs_mask[IPC4_MAX_LIBS_COUNT];
+} __attribute__((packed, aligned(4)));

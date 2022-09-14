@@ -11,16 +11,16 @@
 #include <sof/ipc/msg.h>
 #include <sof/ipc/topology.h>
 #include <sof/ipc/schedule.h>
-#include <sof/drivers/timer.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/clk.h>
+#include <rtos/timer.h>
+#include <rtos/alloc.h>
+#include <rtos/clk.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/notifier.h>
 #include <sof/lib/pm_runtime.h>
 #include <sof/lib/uuid.h>
 #include <sof/platform.h>
-#include <arch/lib/wait.h>
+#include <rtos/wait.h>
 #include <sof/schedule/edf_schedule.h>
 #include <sof/schedule/ll_schedule.h>
 #include <sof/schedule/schedule.h>
@@ -31,6 +31,8 @@
 #include <ipc/topology.h>
 #include <errno.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(idc, CONFIG_SOF_LOG_LEVEL);
 
 /** \brief IDC message payload per core. */
 static SHARED_DATA struct idc_payload static_payload[CONFIG_CORE_COUNT];
@@ -90,14 +92,14 @@ int idc_msg_status_get(uint32_t core)
  */
 int idc_wait_in_blocking_mode(uint32_t target_core, bool (*cond)(int))
 {
-	uint64_t deadline = k_cycle_get_64() + k_us_to_cyc_ceil64(IDC_TIMEOUT);
+	uint64_t deadline = sof_cycle_get_64() + k_us_to_cyc_ceil64(IDC_TIMEOUT);
 
 	while (!cond(target_core)) {
 
 		/* spin here so other core can access IO and timers freely */
 		idelay(8192);
 
-		if (deadline < k_cycle_get_64())
+		if (deadline < sof_cycle_get_64())
 			break;
 	}
 
@@ -366,7 +368,7 @@ int idc_init(void)
 
 int idc_restore(void)
 {
-	struct idc **idc = idc_get();
+	struct idc **idc __unused = idc_get();
 
 	tr_info(&idc_tr, "idc_restore()");
 

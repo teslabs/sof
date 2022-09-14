@@ -6,7 +6,10 @@
 #include <sof/ut.h>
 #include <ipc4/base_fw.h>
 #include <ipc4/pipeline.h>
+#include <ipc4/logging.h>
 #include <sof_versions.h>
+
+LOG_MODULE_REGISTER(basefw, CONFIG_SOF_LOG_LEVEL);
 
 /* 0e398c32-5ade-ba4b-93b1-c50432280ee4 */
 DECLARE_SOF_RT_UUID("basefw", basefw_comp_uuid, 0xe398c32, 0x5ade, 0xba4b,
@@ -40,6 +43,7 @@ static int basefw_config(uint32_t *data_offset, char *data)
 	uint16_t version[4] = {SOF_MAJOR, SOF_MINOR, SOF_MICRO, SOF_BUILD};
 	struct ipc4_tuple *tuple = (struct ipc4_tuple *)data;
 	struct ipc4_scheduler_config sche_cfg;
+	uint32_t log_bytes_size = 0;
 
 	set_tuple(tuple, IPC4_FW_VERSION_FW_CFG, sizeof(version), version);
 
@@ -69,7 +73,11 @@ static int basefw_config(uint32_t *data_offset, char *data)
 
 	/* TODO: add log support */
 	tuple = next_tuple(tuple);
-	set_tuple_uint32(tuple, IPC4_TRACE_LOG_BYTES_FW_CFG, 0);
+#ifdef CONFIG_LOG_BACKEND_ADSP_MTRACE
+	log_bytes_size = SOF_IPC4_LOGGING_MTRACE_PAGE_SIZE;
+#endif
+	set_tuple_uint32(tuple, IPC4_TRACE_LOG_BYTES_FW_CFG, log_bytes_size);
+
 
 	tuple = next_tuple(tuple);
 	set_tuple_uint32(tuple, IPC4_MAX_PPL_CNT_FW_CFG, IPC4_MAX_PPL_COUNT);
@@ -220,42 +228,6 @@ static int basefw_mem_state_info(uint32_t *data_offset, char *data)
 	return 0;
 }
 
-static int basefw_get_dsp_properties(uint32_t *data_offset, char *data)
-{
-	struct ipc4_tuple *tuple = (struct ipc4_tuple *)data;
-	uint16_t fw_version[4] = {SOF_MAJOR, SOF_MINOR, SOF_MICRO, SOF_BUILD};
-	uint32_t value;
-
-	set_tuple(tuple, IPC4_FW_VERSION, sizeof(fw_version), fw_version);
-
-	tuple = next_tuple(tuple);
-	set_tuple_uint32(tuple, IPC4_DSP_CORES, CONFIG_CORE_COUNT);
-
-	tuple = next_tuple(tuple);
-	set_tuple_uint32(tuple, IPC4_MEM_PAGE_SIZE, HOST_PAGE_SIZE);
-
-	tuple = next_tuple(tuple);
-	value = DIV_ROUND_UP(EBB_BANKS_IN_SEGMENT * SRAM_BANK_SIZE, HOST_PAGE_SIZE);
-	set_tuple_uint32(tuple, IPC4_TOTAL_PHYS_MEM_PAGES, value);
-
-	tuple = next_tuple(tuple);
-	set_tuple_uint32(tuple, IPC4_DL_MAILBOX_SIZE, MAILBOX_HOSTBOX_SIZE);
-
-	tuple = next_tuple(tuple);
-	set_tuple_uint32(tuple, IPC4_UL_MAILBOX_SIZE, MAILBOX_DSPBOX_SIZE);
-
-	tuple = next_tuple(tuple);
-	set_tuple_uint32(tuple, IPC4_TRACE_LOG_SIZE, DMA_TRACE_LOCAL_SIZE);
-
-	tuple = next_tuple(tuple);
-	set_tuple_uint32(tuple, IPC4_MAX_PPL_CNT, 26);
-
-	tuple = next_tuple(tuple);
-	*data_offset = (int)((char *)tuple - data);
-
-	return 0;
-}
-
 static int basefw_get_large_config(struct comp_dev *dev,
 				   uint32_t param_id,
 				   bool first_block,
@@ -279,8 +251,6 @@ static int basefw_get_large_config(struct comp_dev *dev,
 		return basefw_hw_config(data_offset, data);
 	case IPC4_MEMORY_STATE_INFO_GET:
 		return basefw_mem_state_info(data_offset, data);
-	case IPC4_DSP_PROPERTIES:
-		return basefw_get_dsp_properties(data_offset, data);
 	/* TODO: add more support */
 	case IPC4_DSP_RESOURCE_STATE:
 	case IPC4_NOTIFICATION_MASK:
@@ -312,6 +282,11 @@ static int basefw_set_large_config(struct comp_dev *dev,
 	case IPC4_FW_CONFIG:
 		tr_warn(&basefw_comp_tr, "returning success for Set FW_CONFIG without handling it");
 		return 0;
+	case IPC4_SYSTEM_TIME:
+		tr_warn(&basefw_comp_tr, "returning success for Set SYSTEM_TIME without handling it");
+		return 0;
+	case IPC4_ENABLE_LOGS:
+		return ipc4_logging_enable_logs(first_block, last_block, data_offset, data);
 	default:
 		break;
 	}

@@ -30,6 +30,8 @@ define(JACK_OFFSET, `0')
 define(JACK_OFFSET, `2')
 ')
 
+ifdef(`AMP_1_LINK',`',
+`define(AMP_1_LINK, `1')')
 
 # if there is an external RT1308 amplifier connected over SoundWire,
 # enable "EXT_AMP" option in the CMakefile.
@@ -74,12 +76,7 @@ define(DMIC_OFFSET, `2')
 
 define(HDMI_BE_ID_BASE, eval(JACK_OFFSET+AMP_OFFSET+AMP_REF_OFFSET+DMIC_OFFSET))
 
-# Add Bluetooth Audio Offload pass-through for ADL
-ifelse(PLATFORM, `adl',
-`
-define(BT_OFFLOAD)
-'
-)
+# Add Bluetooth Audio Offload pass-through
 
 ifdef(`BT_OFFLOAD',
 `	define(`BT_PIPELINE_PB_ID', `13')
@@ -97,9 +94,10 @@ DEBUG_START
 # Define the pipelines
 #
 # PCM0 ---> volume ----> mixer --->ALH 2 BE dailink 0
+# PCM31 ---> volume ------^
 # PCM1 <--- volume <---- ALH 3 BE dailink 1
 ifdef(`EXT_AMP', `
-# PCM2 ---> volume ----> ALH 2 BE dailink 2
+# PCM2 ---> volume ----> ALH 2 BE dailink AMP_1_LINK
 ')
 # PCM5 ---> volume <---- iDisp1
 # PCM6 ---> volume <---- iDisp2
@@ -107,13 +105,14 @@ ifdef(`EXT_AMP', `
 # PCM8 ---> volume <---- iDisp4
 # PCM10 <----volume <---- DMIC01
 # PCM11 <----volume <---- DMIC16k
-ifelse(PLATFORM, `adl', `
+ifdef(`BT_OFFLOAD',
+`
 # PCM14 <---> passthrough <---> SSP2 BT playback/capture
-', `')
+')
 
 # Low Latency capture pipeline 2 on PCM 1 using max 2 channels of s32le.
 # Schedule 48 frames per 1000us deadline with priority 0 on core 0
-PIPELINE_PCM_ADD(sof/pipe-volume-capture.m4,
+PIPELINE_PCM_ADD(sof/pipe-volume-switch-capture.m4,
 	2, 1, 2, s32le,
 	1000, 0, 0,
 	48000, 48000, 48000)
@@ -187,21 +186,41 @@ PIPELINE_PCM_ADD(sof/pipe-host-volume-playback.m4,
 	SCHEDULE_TIME_DOMAIN_TIMER,
 	PIPELINE_PLAYBACK_SCHED_COMP_1)
 
+# Deep buffer playback pipeline 31 on PCM 31 using max 2 channels of s32le
+# Set 1000us deadline on core 0 with priority 0.
+# TODO: Modify pipeline deadline to account for deep buffering
+ifdef(`HEADSET_DEEP_BUFFER',
+`
+PIPELINE_PCM_ADD(sof/pipe-host-volume-playback.m4,
+	31, 31, 2, s32le,
+	1000, 0, 0,
+	48000, 48000, 48000,
+	SCHEDULE_TIME_DOMAIN_TIMER,
+	PIPELINE_PLAYBACK_SCHED_COMP_1)
+'
+)
+
 SectionGraph."mixer-host" {
 	index "0"
 
 	lines [
 		# connect mixer dai pipelines to PCM pipelines
 		dapm(PIPELINE_MIXER_1, PIPELINE_SOURCE_30)
+ifdef(`HEADSET_DEEP_BUFFER',
+`
+
+		dapm(PIPELINE_MIXER_1, PIPELINE_SOURCE_31)
+'
+)
 	]
 }
 
 ifdef(`EXT_AMP',
 `
-# playback DAI is ALH(SDW1 PIN2) using 2 periods
+# playback DAI is ALH(AMP_1_LINK  PIN2) using 2 periods
 # Buffers use s24le format, with 48 frame per 1000us on core 0 with priority 0
 DAI_ADD(sof/pipe-dai-playback.m4,
-	3, ALH, 0x102, SDW1-Playback,
+	3, ALH,  eval(AMP_1_LINK * 256 + 2), `SDW'eval(AMP_1_LINK)`-Playback',
 	PIPELINE_SOURCE_3, 2, s24le,
 	1000, 0, 0, SCHEDULE_TIME_DOMAIN_TIMER)
 ')
@@ -237,6 +256,11 @@ DAI_ADD(sof/pipe-dai-playback.m4,
 # PCM Low Latency, id 0
 dnl PCM_PLAYBACK_ADD(name, pcm_id, playback)
 PCM_PLAYBACK_ADD(Jack Out, 0, PIPELINE_PCM_30)
+ifdef(`HEADSET_DEEP_BUFFER',
+`
+PCM_PLAYBACK_ADD(Jack Out DeepBuffer, 31, PIPELINE_PCM_31)
+'
+)
 PCM_CAPTURE_ADD(Jack In, 1, PIPELINE_PCM_2)
 ifdef(`EXT_AMP',
 `
@@ -261,9 +285,9 @@ DAI_CONFIG(ALH, 3, 1, SDW0-Capture,
 
 ifdef(`EXT_AMP',
 `
-#ALH SDW1 Pin2 (ID: 2)
-DAI_CONFIG(ALH, 0x102, 2, SDW1-Playback,
-	ALH_CONFIG(ALH_CONFIG_DATA(ALH, 0x102, 48000, 2)))
+#ALH SDW AMP_1_LINK Pin2 (ID: 2)
+DAI_CONFIG(ALH, eval(AMP_1_LINK * 256 + 2), 2, `SDW'eval(AMP_1_LINK)`-Playback',
+	ALH_CONFIG(ALH_CONFIG_DATA(ALH, eval(AMP_1_LINK * 256 + 2), 48000, 2)))
 ')
 
 # 3 HDMI/DP outputs

@@ -7,10 +7,10 @@
 
 #include <sof/common.h>
 #include <sof/debug/panic.h>
-#include <sof/drivers/interrupt.h>
-#include <sof/drivers/timer.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/clk.h>
+#include <rtos/interrupt.h>
+#include <rtos/timer.h>
+#include <rtos/alloc.h>
+#include <rtos/clk.h>
 #include <sof/lib/uuid.h>
 #include <sof/list.h>
 #include <sof/platform.h>

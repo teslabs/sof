@@ -11,27 +11,27 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <errno.h>
-#include <unistd.h>
 #include <string.h>
-#include <math.h>
 #include <ipc/topology.h>
-#include <ipc/stream.h>
-#include <ipc/dai.h>
-#include <sof/common.h>
 #include <sof/lib/uuid.h>
 #include <sof/ipc/topology.h>
 #include <tplg_parser/topology.h>
+#include <tplg_parser/tokens.h>
 
 /* load mixer dapm widget */
 int tplg_create_mixer(struct tplg_context *ctx,
-		    struct sof_ipc_comp_mixer *mixer)
+		    struct sof_ipc_comp_mixer *mixer, size_t max_comp_size)
 {
 	struct snd_soc_tplg_vendor_array *array = NULL;
 	size_t total_array_size = 0, read_size;
 	FILE *file = ctx->file;
 	int size = ctx->widget->priv.size;
 	int comp_id = ctx->comp_id;
+	char uuid[UUID_SIZE];
 	int ret;
+
+	if (max_comp_size < sizeof(struct sof_ipc_comp_mixer) + UUID_SIZE)
+		return -EINVAL;
 
 	/* allocate memory for vendor tuple array */
 	array = (struct snd_soc_tplg_vendor_array *)malloc(size);
@@ -73,6 +73,15 @@ int tplg_create_mixer(struct tplg_context *ctx,
 			free(MOVE_POINTER_BY_BYTES(array, -total_array_size));
 			return -EINVAL;
 		}
+		/* parse uuid token */
+		ret = sof_parse_tokens(uuid, comp_ext_tokens,
+				       ARRAY_SIZE(comp_ext_tokens), array,
+				       array->size);
+		if (ret != 0) {
+			fprintf(stderr, "error: parse mixer uuid token %d\n", size);
+			free(array);
+			return -EINVAL;
+		}
 
 		total_array_size += array->size;
 
@@ -83,39 +92,32 @@ int tplg_create_mixer(struct tplg_context *ctx,
 	/* point to the start of array so it gets freed properly */
 	array = MOVE_POINTER_BY_BYTES(array, -total_array_size);
 
-	/* configure src */
+	/* configure mixer */
 	mixer->comp.hdr.cmd = SOF_IPC_GLB_TPLG_MSG | SOF_IPC_TPLG_COMP_NEW;
 	mixer->comp.id = comp_id;
-	mixer->comp.hdr.size = sizeof(struct sof_ipc_comp_src);
+	mixer->comp.hdr.size = sizeof(struct sof_ipc_comp_src) + UUID_SIZE;
 	mixer->comp.type = SOF_COMP_MIXER;
 	mixer->comp.pipeline_id = ctx->pipeline_id;
+	mixer->comp.ext_data_length = UUID_SIZE;
 	mixer->config.hdr.size = sizeof(struct sof_ipc_comp_config);
+	memcpy(mixer + 1, &uuid, UUID_SIZE);
 
 	free(array);
 	return 0;
 }
 
-/* load mixer dapm widget */
-int tplg_register_mixer(struct tplg_context *ctx)
+int tplg_new_mixer(struct tplg_context *ctx, struct sof_ipc_comp *comp, size_t max_comp_size,
+		struct snd_soc_tplg_ctl_hdr *rctl, size_t max_ctl_size)
 {
-	struct sof_ipc_comp_mixer mixer = {0};
-	struct sof *sof = ctx->sof;
-	FILE *file = ctx->file;
-	int ret = 0;
+	struct sof_ipc_comp_mixer *mixer = (struct sof_ipc_comp_mixer *)comp;
+	int ret;
 
-	ret = tplg_create_mixer(ctx, &mixer);
+	ret = tplg_create_mixer(ctx, mixer, max_comp_size);
 	if (ret < 0)
 		return ret;
 
-	if (tplg_create_controls(ctx->widget->num_kcontrols, file) < 0) {
+	if (tplg_create_controls(ctx->widget->num_kcontrols, ctx->file, rctl, max_ctl_size) < 0) {
 		fprintf(stderr, "error: loading controls\n");
-		return -EINVAL;
-	}
-
-	/* load mixer component */
-	register_comp(mixer.comp.type, NULL);
-	if (ipc_comp_new(sof->ipc, ipc_to_comp_new(&mixer)) < 0) {
-		fprintf(stderr, "error: new mixer comp\n");
 		return -EINVAL;
 	}
 

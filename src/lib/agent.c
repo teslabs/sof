@@ -13,10 +13,10 @@
  * called.
  */
 
-#include <sof/drivers/timer.h>
+#include <rtos/timer.h>
 #include <sof/lib/agent.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/clk.h>
+#include <rtos/alloc.h>
+#include <rtos/clk.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/uuid.h>
 #include <sof/debug/panic.h>
@@ -33,10 +33,9 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <rtos/kernel.h>
 
-#ifdef __ZEPHYR__
-#include <zephyr/kernel.h>
-#endif
+LOG_MODULE_REGISTER(sa, CONFIG_SOF_LOG_LEVEL);
 
 /* 5276b491-5b64-464e-8984-dc228ef9e6a1 */
 DECLARE_SOF_UUID("sa", sa_uuid, 0x5276b491, 0x5b64, 0x464e,
@@ -55,6 +54,16 @@ static void perf_sa_trace(struct perf_cnt_data *pcd, int ignored)
 		(uint32_t)((pcd)->plat_delta_peak),
 		(uint32_t)((pcd)->cpu_delta_peak));
 }
+
+#if CONFIG_PERFORMANCE_COUNTERS_RUN_AVERAGE
+static void perf_avg_sa_trace(struct perf_cnt_data *pcd, int ignored)
+{
+	tr_info(&sa_tr, "perf sys_load cpu avg %u (current peak %u)",
+		(uint32_t)((pcd)->cpu_delta_sum),
+		(uint32_t)((pcd)->cpu_delta_peak));
+}
+#endif
+
 #endif
 
 static enum task_state validate(void *data)
@@ -63,10 +72,11 @@ static enum task_state validate(void *data)
 	uint64_t current;
 	uint64_t delta;
 
-	current = k_cycle_get_64();
+	current = sof_cycle_get_64();
 	delta = current - sa->last_check;
 
 	perf_cnt_stamp(&sa->pcd, perf_sa_trace, 0 /* ignored */);
+	perf_cnt_average(&sa->pcd, perf_avg_sa_trace, 0 /* ignored */);
 
 #if CONFIG_AGENT_PANIC_ON_DELAY
 	/* panic timeout */
@@ -127,7 +137,7 @@ void sa_init(struct sof *sof, uint64_t timeout)
 	schedule_task(&sof->sa->work, 0, timeout);
 
 	/* set last check time to now to give time for boot completion */
-	sof->sa->last_check = k_cycle_get_64();
+	sof->sa->last_check = sof_cycle_get_64();
 
 }
 

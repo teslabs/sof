@@ -10,13 +10,13 @@
 #include <sof/audio/pipeline.h>
 #include <sof/debug/panic.h>
 #include <sof/ipc/msg.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/cache.h>
+#include <rtos/alloc.h>
+#include <rtos/cache.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/notifier.h>
 #include <sof/lib/uuid.h>
 #include <sof/list.h>
-#include <sof/string.h>
+#include <rtos/string.h>
 #include <sof/ut.h>
 #include <sof/trace/trace.h>
 #include <ipc4/aria.h>
@@ -28,6 +28,8 @@
 #include <stdint.h>
 
 static const struct comp_driver comp_aria;
+
+LOG_MODULE_REGISTER(aria, CONFIG_SOF_LOG_LEVEL);
 
 /* these ids aligns windows driver requirement to support windows driver */
 /* 99f7166d-372c-43ef-81f6-22007aa15f03 */
@@ -133,7 +135,7 @@ static int init_aria(struct comp_dev *dev, struct comp_ipc_config *config,
 	list_init(&dev->bsource_list);
 	list_init(&dev->bsink_list);
 
-	dcache_invalidate_region(spec, sizeof(*aria));
+	dcache_invalidate_region((__sparse_force void __sparse_cache *)spec, sizeof(*aria));
 	cd = rzalloc(SOF_MEM_ZONE_RUNTIME, 0, SOF_MEM_CAPS_RAM, sizeof(*cd));
 	if (!cd) {
 		comp_free(dev);
@@ -267,8 +269,8 @@ static int aria_trigger(struct comp_dev *dev, int cmd)
 static int aria_copy(struct comp_dev *dev)
 {
 	struct comp_copy_limits c;
-	struct comp_buffer *source;
-	struct comp_buffer *sink;
+	struct comp_buffer *source, *sink;
+	struct comp_buffer __sparse_cache *source_c, *sink_c;
 	struct aria_data *cd;
 	uint32_t source_bytes;
 	uint32_t sink_bytes;
@@ -285,43 +287,67 @@ static int aria_copy(struct comp_dev *dev)
 	sink = list_first_item(&dev->bsink_list, struct comp_buffer,
 			       source_list);
 
-	comp_get_copy_limits_with_lock(source, sink, &c);
+	source_c = buffer_acquire(source);
+	sink_c = buffer_acquire(sink);
+
+	comp_get_copy_limits(source_c, sink_c, &c);
 	source_bytes = c.frames * c.source_frame_bytes;
 	sink_bytes = c.frames * c.sink_frame_bytes;
 
 	if (source_bytes == 0)
-		return 0;
+		goto out;
 
-	buffer_stream_invalidate(source, source_bytes);
+	buffer_stream_invalidate(source_c, source_bytes);
 
 	for (i = 0; i < c.frames; i++) {
-		for (channel = 0; channel < sink->stream.channels; channel++) {
-			cd->buf_in[frag] = *(int32_t *)audio_stream_read_frag_s32(&source->stream,
+		for (channel = 0; channel < sink_c->stream.channels; channel++) {
+			cd->buf_in[frag] = *(int32_t *)audio_stream_read_frag_s32(&source_c->stream,
 										  frag);
 
 			frag++;
 		}
 	}
-	dcache_writeback_region(cd->buf_in, c.frames * sink->stream.channels * sizeof(int32_t));
+	dcache_writeback_region((__sparse_force void __sparse_cache *)cd->buf_in,
+				c.frames * sink_c->stream.channels * sizeof(int32_t));
 
 	aria_process_data(dev, cd->buf_out, sink_bytes / sizeof(uint32_t),
 			  cd->buf_in, source_bytes / sizeof(uint32_t));
 
-	dcache_writeback_region(cd->buf_out, c.frames * sink->stream.channels * sizeof(int32_t));
+	dcache_writeback_region((__sparse_force void __sparse_cache *)cd->buf_out,
+				c.frames * sink_c->stream.channels * sizeof(int32_t));
 	frag = 0;
 	for (i = 0; i < c.frames; i++) {
-		for (channel = 0; channel < sink->stream.channels; channel++) {
-			destp = audio_stream_write_frag_s32(&sink->stream, frag);
+		for (channel = 0; channel < sink_c->stream.channels; channel++) {
+			destp = audio_stream_write_frag_s32(&sink_c->stream, frag);
 			*destp = cd->buf_out[frag];
 
 			frag++;
 		}
 	}
 
-	buffer_stream_writeback(sink, sink_bytes);
+	buffer_stream_writeback(sink_c, sink_bytes);
 
-	comp_update_buffer_produce(sink, sink_bytes);
-	comp_update_buffer_consume(source, source_bytes);
+	comp_update_buffer_produce(sink_c, sink_bytes);
+	comp_update_buffer_consume(source_c, source_bytes);
+
+out:
+	buffer_release(sink_c);
+	buffer_release(source_c);
+
+	return 0;
+}
+
+static int aria_get_attribute(struct comp_dev *dev, uint32_t type, void *value)
+{
+	struct aria_data *cd = comp_get_drvdata(dev);
+
+	switch (type) {
+	case COMP_ATTR_BASE_CONFIG:
+		*(struct ipc4_base_module_cfg *)value = cd->base;
+		break;
+	default:
+		return -EINVAL;
+	}
 
 	return 0;
 }
@@ -336,6 +362,7 @@ static const struct comp_driver comp_aria = {
 		.copy			= aria_copy,
 		.prepare		= aria_prepare,
 		.reset			= aria_reset,
+		.get_attribute		= aria_get_attribute,
 	},
 };
 

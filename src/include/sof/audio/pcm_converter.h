@@ -17,6 +17,8 @@
 #include <ipc/stream.h>
 #include <ipc4/gateway.h>
 
+#include <sof/compiler_attributes.h>
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -28,11 +30,7 @@ struct audio_stream;
 
 #ifndef UNIT_TEST
 #if __XCC__ && XCHAL_HAVE_HIFI3 && CONFIG_FORMAT_CONVERT_HIFI3
-#if __ZEPHYR__ && CONFIG_IPC_MAJOR_4
-#define PCM_CONVERTER_GENERIC
-#else
 #define PCM_CONVERTER_HIFI3
-#endif
 #else
 #define PCM_CONVERTER_GENERIC
 #endif
@@ -47,8 +45,8 @@ struct audio_stream;
  * \param samples number of samples to convert
  * \return error code or number of processed samples.
  */
-typedef int (*pcm_converter_func)(const struct audio_stream *source,
-				  uint32_t ioffset, struct audio_stream *sink,
+typedef int (*pcm_converter_func)(const struct audio_stream __sparse_cache *source,
+				  uint32_t ioffset, struct audio_stream __sparse_cache *sink,
 				  uint32_t ooffset, uint32_t samples);
 
 /**
@@ -165,8 +163,8 @@ pcm_get_conversion_vc_function(enum sof_ipc_frame in_bits,
  * \param converter core conversion function working on linear memory regions
  * \return error code or number of processed samples
  */
-int pcm_convert_as_linear(const struct audio_stream *source, uint32_t ioffset,
-			  struct audio_stream *sink, uint32_t ooffset,
+int pcm_convert_as_linear(const struct audio_stream __sparse_cache *source, uint32_t ioffset,
+			  struct audio_stream __sparse_cache *sink, uint32_t ooffset,
 			  uint32_t samples, pcm_converter_lin_func converter);
 
 #endif /* __SOF_AUDIO_PCM_CONVERTER_H__ */

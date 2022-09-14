@@ -41,22 +41,18 @@ config SQRT_FIXED
 config NATURAL_LOGARITHM_FIXED
 	bool "Natural Logarithm function"
 	default n
+	select BINARY_LOGARITHM_FIXED
 	help
 	  This option builds Natural Logarithm function (loge(N)) which is the logarithm to
 	  the base e.
 
 config COMMON_LOGARITHM_FIXED
-       bool "Common Logarithm function"
-       default n
-       help
+	bool "Common Logarithm function"
+	default n
+	select BINARY_LOGARITHM_FIXED
+	help
 	  This option builds common Logarithm function (log10(N)) which is the logarithm to
 	  the base 10.
-
-config NUMBERS_GCD
-	bool "Greatest common divisor"
-	default n
-	help
-	  Returns greatest common divisor for two parameters.
 
 config NUMBERS_NORM
 	bool "Norm function"
@@ -86,6 +82,29 @@ config MATH_FFT
 	  Enable Fast Fourier Transform library, this should not be selected
 	  directly, please select it from other audio components where need it.
 
+menu "Supported FFT word lengths"
+	visible if MATH_FFT
+
+config MATH_16BIT_FFT
+	bool "S16_LE data support"
+	default y
+	help
+	  This option enables support
+	  for 16 bit PCM data. The twiddle
+	  factors data consumes
+	  4096 bytes.
+
+config MATH_32BIT_FFT
+	bool "S32_LE data support"
+	default n
+	help
+	  This option enables support
+	  for 32 bit PCM data. The twiddle
+	  factors data consumes
+	  8192 bytes.
+
+endmenu
+
 config MATH_FIR
 	bool "FIR filter library"
 	default n
@@ -101,5 +120,73 @@ config MATH_IIR_DF2T
 	help
 	  Select this to build IIR (Infinite Impulse Response) filter
 	  or type 2-transposed library.
+
+config MATH_WINDOW
+	bool "Window functions library"
+	default n
+	select CORDIC_FIXED
+	select NATURAL_LOGARITHM_FIXED
+	help
+          Select this to build a library for window functions. The window functions
+          are used to mitigate artefacts (from nature of FFT) to spectra when
+          computing FFT for a finite long chunk of audio. The sample values within
+          the window length need to be multiplied by the weight of coefficient value.
+          The currently provided window functions are Blackman, Hamming, Povey, and
+          rectangular.
+
+config MATH_MATRIX
+	bool "Matrix functions library"
+	default n
+	help
+	  Select this to build a matrix arithmetic library. Currently it supports
+	  matrix initialization, clear, set values, get values, and a multiply
+	  function for 16 bit fractional format. Multiplication functions exist
+	  for normal matrix multiply and elementwise multiplication.
+
+config MATH_AUDITORY
+	bool "Auditory functions library"
+	default n
+	select NATURAL_LOGARITHM_FIXED
+	help
+	  Select this to build a psychoacoustics and auditory system related
+	  functions library. Currently the library provides functions for Mel
+	  frequency scale. Functions are provided to convert between Mel and
+	  Hz, initialize a Mel filterbank and apply Mel filterbank to convert
+	  a linear power spectrum into an auditory power spectrum.
+
+menu "Supported Mel filterbank word lengths"
+	visible if MATH_AUDITORY
+
+config MATH_16BIT_MEL_FILTERBANK
+	bool "icomplex16 data support"
+	default n
+	help
+	  This option enables function psy_apply_mel_filterbank_16().
+	  It takes as input an array of icomplex16
+	  struct data from FFT. Output is 16 bit
+	  logarithmic Mel spectrum.
+
+config MATH_32BIT_MEL_FILTERBANK
+	bool "icomplex32 data support"
+	default n
+	help
+	  This option enables function psy_apply_mel_filterbank_32().
+	  It takes as input an array of icomplex32
+	  struct data from FFT. Output is 16 bit
+	  logarithmic Mel spectrum.
+
+endmenu
+
+config MATH_DCT
+	bool "DCT transform library"
+	default n
+	select MATH_MATRIX
+	select CORDIC_FIXED
+	help
+	  Select this to build library for discrete cosine transform
+	  (DCT). The library currently supports initialization of a
+	  matrix for ortho normalized DCT type II. The actual DCT
+	  transform for data is done as matrix multiply with the
+	  returned DCT matrix.
 
 endmenu

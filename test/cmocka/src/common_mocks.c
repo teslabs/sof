@@ -6,8 +6,8 @@
 // Author: Karol Trzcinski <karolx.trzcinski@linux.intel.com>
 
 #include <errno.h>
-#include <sof/lib/alloc.h>
-#include <sof/drivers/timer.h>
+#include <rtos/alloc.h>
+#include <rtos/timer.h>
 #include <sof/lib/mm_heap.h>
 #include <sof/ipc/topology.h>
 #include <sof/ipc/msg.h>
@@ -15,11 +15,11 @@
 #include <sof/schedule/edf_schedule.h>
 #include <sof/schedule/ll_schedule.h>
 #include <sof/schedule/schedule.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <sof/audio/component_ext.h>
-#include <sof/lib/clk.h>
+#include <rtos/clk.h>
 #include <sof/lib/notifier.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <arch/lib/cpu.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -199,11 +199,6 @@ void WEAK ipc_msg_send(struct ipc_msg *msg, void *data, bool high_priority)
 	(void)msg;
 	(void)data;
 	(void)high_priority;
-}
-
-struct comp_dev * WEAK comp_make_shared(struct comp_dev *dev)
-{
-	return dev;
 }
 
 int WEAK platform_ipc_init(struct ipc *ipc)

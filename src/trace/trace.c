@@ -9,16 +9,16 @@
 #include <sof/debug/panic.h>
 #include <sof/ipc/msg.h>
 #include <sof/ipc/topology.h>
-#include <sof/drivers/timer.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/cache.h>
+#include <rtos/timer.h>
+#include <rtos/alloc.h>
+#include <rtos/cache.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/mailbox.h>
 #include <sof/lib/memory.h>
 #include <sof/platform.h>
-#include <sof/string.h>
+#include <rtos/string.h>
 #include <sof/sof.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <sof/trace/dma-trace.h>
 #include <sof/trace/preproc.h>
 #include <sof/trace/trace.h>
@@ -26,6 +26,9 @@
 #include <user/trace.h>
 #include <stdarg.h>
 #include <stdint.h>
+
+/* every trace calls uses IPC context in this file */
+LOG_MODULE_DECLARE(ipc, CONFIG_SOF_LOG_LEVEL);
 
 extern struct tr_ctx dt_tr;
 
@@ -101,13 +104,14 @@ void mtrace_event(const char *data, uint32_t length)
 
 	if (available < length) { /* wrap */
 		memset(t + trace->pos, 0xff, available);
-		dcache_writeback_region(t + trace->pos, available);
+		dcache_writeback_region((__sparse_force char __sparse_cache *)t + trace->pos,
+					available);
 		trace->pos = 0;
 	}
 
 	memcpy_s(t + trace->pos, MAILBOX_TRACE_SIZE - trace->pos,
 		 data, length);
-	dcache_writeback_region(t + trace->pos, length);
+	dcache_writeback_region((__sparse_force char __sparse_cache *)t + trace->pos, length);
 	trace->pos += length;
 }
 #endif /* __ZEPHYR__ */
@@ -243,7 +247,7 @@ static void dma_trace_log(bool send_atomic, uint32_t log_entry, const struct tr_
 	int i;
 
 	/* fill log content. arg_count is in the dictionary. */
-	put_header(data, ctx->uuid_p, id_1, id_2, log_entry, k_cycle_get_64_safe());
+	put_header(data, ctx->uuid_p, id_1, id_2, log_entry, sof_cycle_get_64_safe());
 
 	for (i = 0; i < arg_count; ++i)
 		data[PAYLOAD_OFFSET(i)] = va_arg(vargs, uint32_t);
@@ -284,7 +288,7 @@ void trace_log_filtered(bool send_atomic, const void *log_entry, const struct tr
 
 #if CONFIG_TRACE_FILTERING_ADAPTIVE
 	if (!trace->user_filter_override) {
-		const uint64_t current_ts = k_cycle_get_64_safe();
+		const uint64_t current_ts = sof_cycle_get_64_safe();
 
 		emit_recent_entries(current_ts);
 
@@ -509,7 +513,7 @@ void trace_init(struct sof *sof)
 	 * Don't touch.
 	 */
 	bzero((void *)MAILBOX_TRACE_BASE, MAILBOX_TRACE_SIZE);
-	dcache_writeback_invalidate_region((void *)MAILBOX_TRACE_BASE,
+	dcache_writeback_invalidate_region((__sparse_force void __sparse_cache *)MAILBOX_TRACE_BASE,
 					   MAILBOX_TRACE_SIZE);
 #endif
 
@@ -522,7 +526,7 @@ static void mtrace_dict_entry_vl(bool atomic_context, uint32_t dict_entry_addres
 	int i;
 	char packet[MESSAGE_SIZE(_TRACE_EVENT_MAX_ARGUMENT_COUNT)];
 	uint32_t *args = (uint32_t *)&packet[MESSAGE_SIZE(0)];
-	const uint64_t tstamp = k_cycle_get_64_safe();
+	const uint64_t tstamp = sof_cycle_get_64_safe();
 
 	put_header(packet, dt_tr.uuid_p, _TRACE_INV_ID, _TRACE_INV_ID,
 		   dict_entry_address, tstamp);

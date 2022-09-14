@@ -25,17 +25,17 @@
  * holds if you have CONFIG_HOST_PTABLE enabled, at least currently.
  */
 
-#include <sof/atomic.h>
+#include <rtos/atomic.h>
 #include <sof/audio/component.h>
-#include <sof/drivers/timer.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/cache.h>
+#include <rtos/timer.h>
+#include <rtos/alloc.h>
+#include <rtos/cache.h>
 #include <sof/lib/dma.h>
 #include <sof/lib/notifier.h>
 #include <sof/lib/uuid.h>
 #include <sof/platform.h>
-#include <sof/spinlock.h>
-#include <sof/string.h>
+#include <rtos/spinlock.h>
+#include <rtos/string.h>
 #include <sof/trace/trace.h>
 #include <sys/types.h>
 #include <ipc/topology.h>
@@ -45,6 +45,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(dummy_dma, CONFIG_SOF_LOG_LEVEL);
 
 /* f6d15ad3-b122-458c-ae9b-0ab0b5867aa0 */
 DECLARE_SOF_UUID("dummy-dma", dummy_dma_uuid, 0xf6d15ad3, 0xb122, 0x458c,
@@ -315,7 +317,7 @@ static int dummy_dma_status(struct dma_chan_data *channel,
 	status->r_pos = ch->r_pos;
 	status->w_pos = ch->w_pos;
 
-	status->timestamp = k_cycle_get_64();
+	status->timestamp = sof_cycle_get_64();
 	return 0;
 }
 

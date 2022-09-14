@@ -10,8 +10,9 @@
 #include <sof/audio/pipeline.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/mm_heap.h>
+#include <sof/compiler_attributes.h>
 #include <sof/list.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <ipc/stream.h>
 #include <ipc/topology.h>
 #include <ipc4/error_status.h>
@@ -21,50 +22,52 @@
 #include <stddef.h>
 #include <stdint.h>
 
+LOG_MODULE_DECLARE(pipe, CONFIG_SOF_LOG_LEVEL);
+
 static int pipeline_comp_params_neg(struct comp_dev *current,
 				    struct comp_buffer *calling_buf,
 				    struct pipeline_walk_context *ctx,
 				    int dir)
 {
 	struct pipeline_data *ppl_data = ctx->comp_data;
+	struct comp_buffer __sparse_cache *buf_c = buffer_acquire(calling_buf);
 	int err = 0;
 
 	pipe_dbg(current->pipeline, "pipeline_comp_params_neg(), current->comp.id = %u, dir = %u",
 		 dev_comp_id(current), dir);
 
 	/* check if 'current' is already configured */
-	if (current->state != COMP_STATE_INIT &&
-	    current->state != COMP_STATE_READY) {
-		/* return 0 if params matches */
-		if (buffer_params_match(calling_buf,
-					&ppl_data->params->params,
-					BUFF_PARAMS_FRAME_FMT |
-					BUFF_PARAMS_RATE))
-			return 0;
+	switch (current->state) {
+	case COMP_STATE_INIT:
+	case COMP_STATE_READY:
 		/*
-		 * the param is conflict with an active pipeline,
-		 * drop an error and reject the .params() command.
+		 * Negotiation only happen when the current component has > 1
+		 * source or sink, we are propagating the params to branched
+		 * buffers, and the subsequent component's .params() or .prepare()
+		 * should be responsible for calibrating if needed. For example,
+		 * a component who has different channels input/output buffers
+		 * should explicitly configure the channels of the branched buffers.
 		 */
-		pipe_err(current->pipeline, "pipeline_comp_params_neg(): params conflict with existed active pipeline!");
-		return -EINVAL;
-	}
-
-	/*
-	 * Negotiation only happen when the current component has > 1
-	 * source or sink, we are propagating the params to branched
-	 * buffers, and the subsequent component's .params() or .prepare()
-	 * should be responsible for calibrating if needed. For example,
-	 * a component who has different channels input/output buffers
-	 * should explicitly configure the channels of the branched buffers.
-	 */
-	if (calling_buf) {
-		calling_buf = buffer_acquire(calling_buf);
-		err = buffer_set_params(calling_buf,
-					&ppl_data->params->params,
+		err = buffer_set_params(buf_c, &ppl_data->params->params,
 					BUFFER_UPDATE_FORCE);
-		calling_buf = buffer_release(calling_buf);
+		break;
+	default:
+		/* return 0 if params matches */
+		if (!buffer_params_match(buf_c,
+					 &ppl_data->params->params,
+					 BUFF_PARAMS_FRAME_FMT |
+					 BUFF_PARAMS_RATE)) {
+			/*
+			 * parameters conflict with an active pipeline,
+			 * drop an error and reject the .params() command.
+			 */
+			pipe_err(current->pipeline,
+				 "pipeline_comp_params_neg(): params conflict with existing active pipeline!");
+			err = -EINVAL;
+		}
 	}
 
+	buffer_release(buf_c);
 	return err;
 }
 
@@ -76,6 +79,7 @@ static int pipeline_comp_params(struct comp_dev *current,
 	struct pipeline_walk_context param_neg_ctx = {
 		.comp_func = pipeline_comp_params_neg,
 		.comp_data = ppl_data,
+		.incoming = calling_buf,
 		.skip_incomplete = true,
 	};
 	int stream_direction = ppl_data->params->params.direction;
@@ -127,7 +131,7 @@ static int pipeline_comp_params(struct comp_dev *current,
 }
 
 /* save params changes made by component */
-static void pipeline_update_buffer_pcm_params(struct comp_buffer *buffer,
+static void pipeline_update_buffer_pcm_params(struct comp_buffer __sparse_cache *buffer,
 					      void *data)
 {
 	struct sof_ipc_stream_params *params = data;
@@ -184,10 +188,11 @@ static int pipeline_comp_hw_params_buf(struct comp_dev *current,
 		return ret;
 	/* set buffer parameters */
 	if (calling_buf) {
-		calling_buf = buffer_acquire(calling_buf);
-		ret = buffer_set_params(calling_buf, &ppl_data->params->params,
+		struct comp_buffer __sparse_cache *buf_c = buffer_acquire(calling_buf);
+
+		ret = buffer_set_params(buf_c, &ppl_data->params->params,
 					BUFFER_UPDATE_IF_UNSET);
-		calling_buf = buffer_release(calling_buf);
+		buffer_release(buf_c);
 		if (ret < 0)
 			pipe_err(current->pipeline,
 				 "pipeline_comp_hw_params(): buffer_set_params(): %d", ret);
@@ -288,6 +293,10 @@ static int pipeline_comp_prepare(struct comp_dev *current,
 		 dev_comp_id(current), dir);
 
 	if (!comp_is_single_pipeline(current, ppl_data->start)) {
+		/* ipc4 module is only prepared in its parent pipeline */
+		if (IPC4_MOD_ID(current->ipc_config.id))
+			return 0;
+
 		/* If pipeline connected to the starting one is in improper
 		 * direction (CAPTURE towards DAI, PLAYBACK towards HOST),
 		 * stop propagation. Direction param of the pipeline can not be
@@ -306,10 +315,6 @@ static int pipeline_comp_prepare(struct comp_dev *current,
 			    end_type == COMP_ENDPOINT_NODE)
 				return 0;
 		}
-
-		/* ipc4 module is only prepared in its parent pipeline */
-		if (IPC4_MOD_ID(current->ipc_config.id))
-			return 0;
 	}
 
 	err = pipeline_comp_task_init(current->pipeline);

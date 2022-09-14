@@ -4,12 +4,12 @@
 //
 // Author: Liam Girdwood <liam.r.girdwood@linux.intel.com>
 
-#include <sof/drivers/interrupt.h>
+#include <rtos/interrupt.h>
 #include <sof/ipc/driver.h>
 #include <sof/drivers/pmc.h>
-#include <sof/lib/alloc.h>
+#include <rtos/alloc.h>
 #include <sof/lib/shim.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <sof/platform.h>
 #include <ipc/topology.h>
 #include <errno.h>

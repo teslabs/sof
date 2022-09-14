@@ -11,16 +11,16 @@
 #include <sof/drivers/mn.h>
 #include <sof/drivers/timestamp.h>
 #include <sof/drivers/ssp.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/clk.h>
+#include <rtos/alloc.h>
+#include <rtos/clk.h>
 #include <sof/lib/dai.h>
 #include <sof/lib/dma.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/pm_runtime.h>
 #include <sof/lib/uuid.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <sof/platform.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <sof/trace/trace.h>
 #include <ipc/dai.h>
 #include <ipc/dai-intel.h>
@@ -32,6 +32,8 @@
 #include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(ssp_dai, CONFIG_SOF_LOG_LEVEL);
 
 /* 31458125-95c4-4085-8f3f-497434cb2daf */
 DECLARE_SOF_UUID("ssp-dai", ssp_uuid, 0x31458125, 0x95c4, 0x4085,
@@ -697,6 +699,17 @@ static int ssp_set_config_tplg(struct dai *dai, struct ipc_config_dai *common_co
 	ssp->state[DAI_DIR_CAPTURE] = COMP_STATE_PREPARE;
 
 clk:
+	/* MCLK always-on: turn on mclk and never turn it off */
+	if (ssp->params.clks_control & SOF_DAI_INTEL_SSP_CLKCTRL_MCLK_AON) {
+		ret = ssp_mclk_prepare_enable(dai);
+		if (ret < 0)
+			goto out;
+
+		ssp->clk_active |= SSP_CLK_MCLK_AON_REQ;
+
+		dai_info(dai, "ssp_set_config(): enable MCLK for SSP%d", dai->index);
+	}
+
 	switch (config->flags & SOF_DAI_CONFIG_FLAGS_CMD_MASK) {
 	case SOF_DAI_CONFIG_FLAGS_HW_PARAMS:
 		if (ssp->params.clks_control & SOF_DAI_INTEL_SSP_CLKCTRL_MCLK_ES) {
@@ -823,7 +836,7 @@ static int ssp_set_config_blob(struct dai *dai, struct ipc_config_dai *common_co
 	ssp->config.ssp.tdm_slots = SSCR0_FRDC_GET(ssc0);
 	ssp->config.ssp.tx_slots = SSTSA_GET(sstsa);
 	ssp->config.ssp.rx_slots = SSRSA_GET(ssrsa);
-	ssp->config.ssp.fsync_rate = 48000;
+	ssp->config.ssp.fsync_rate = common_config->sampling_frequency;
 	ssp->params = ssp->config.ssp;
 
 	ssp->state[DAI_DIR_PLAYBACK] = COMP_STATE_PREPARE;
@@ -871,7 +884,8 @@ static int ssp_pre_start(struct dai *dai)
 	 * We will test if mclk/bclk is configured in
 	 * ssp_mclk/bclk_prepare_enable/disable functions
 	 */
-	if (!(ssp->clk_active & SSP_CLK_MCLK_ES_REQ)) {
+	if (!(ssp->clk_active & SSP_CLK_MCLK_ES_REQ) &&
+	    !(ssp->clk_active & SSP_CLK_MCLK_AON_REQ)) {
 		/* MCLK config */
 		ret = ssp_mclk_prepare_enable(dai);
 		if (ret < 0)
@@ -901,7 +915,8 @@ static void ssp_post_stop(struct dai *dai)
 				 dai->index);
 			ssp_bclk_disable_unprepare(dai);
 		}
-		if (!(ssp->clk_active & SSP_CLK_MCLK_ES_REQ)) {
+		if (!(ssp->clk_active & SSP_CLK_MCLK_ES_REQ) &&
+		    !(ssp->clk_active & SSP_CLK_MCLK_AON_REQ)) {
 			dai_info(dai, "ssp_post_stop releasing MCLK clocks for SSP%d...",
 				 dai->index);
 			ssp_mclk_disable_unprepare(dai);

@@ -6,17 +6,19 @@
 
 #include <sof/audio/component.h>
 #include <sof/drivers/sdma.h>
-#include <sof/drivers/timer.h>
-#include <sof/lib/alloc.h>
+#include <rtos/timer.h>
+#include <rtos/alloc.h>
 #include <sof/lib/dma.h>
 #include <sof/lib/io.h>
 #include <sof/lib/notifier.h>
 #include <sof/lib/uuid.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <sof/platform.h>
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(sdma, CONFIG_SOF_LOG_LEVEL);
 
 /* 70d223ef-2b91-4aac-b444-d89a0db2793a */
 DECLARE_SOF_UUID("sdma", sdma_uuid, 0x70d223ef, 0x2b91, 0x4aac,
@@ -445,7 +447,7 @@ static void sdma_channel_put(struct dma_chan_data *channel)
 		return; /* Channel was already free */
 	tr_dbg(&sdma_tr, "sdma_channel_put(%d)", channel->index);
 
-	dma_interrupt(channel, DMA_IRQ_CLEAR);
+	dma_interrupt_legacy(channel, DMA_IRQ_CLEAR);
 	sdma_disable_event(channel, pdata->hw_event);
 	sdma_set_overrides(channel, false, false);
 	channel->status = COMP_STATE_INIT;
@@ -456,7 +458,7 @@ static int sdma_start(struct dma_chan_data *channel)
 	tr_dbg(&sdma_tr, "sdma_start(%d)", channel->index);
 
 	if (channel->status != COMP_STATE_PREPARE &&
-	    channel->status != COMP_STATE_SUSPEND)
+	    channel->status != COMP_STATE_PAUSED)
 		return -EINVAL;
 
 	channel->status = COMP_STATE_ACTIVE;
@@ -556,7 +558,7 @@ static int sdma_status(struct dma_chan_data *channel,
 	status->flags = 0;
 	status->w_pos = 0;
 	status->r_pos = 0;
-	status->timestamp = k_cycle_get_64();
+	status->timestamp = sof_cycle_get_64();
 
 	bd = (struct sdma_bd *)pdata->ccb->current_bd_paddr;
 

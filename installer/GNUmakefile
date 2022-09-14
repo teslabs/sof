@@ -15,21 +15,25 @@
 # released by Intel.
 
 # See rimage/config/*.toml
-UNSIGNED_list ?= bdw byt cht
-SIGNED_list  ?= apl cnl icl jsl tgl tgl-h
+SIGNED_list  ?= tgl tgl-h
 
 # To find aliases, try in a Linux kernel git clone:
 #
 #   git grep 'sof-.*\.ri' -- sound/soc/
 
-ALIAS_SAME_KEY_list  := glk cfl cml
-ALIAS_OTHER_KEY_list := ehl adl adl-s
-ALIAS_list ?= ${ALIAS_SAME_KEY_list} ${ALIAS_OTHER_KEY_list}
+ALIAS_OTHER_KEY_list += adl adl-s rpl rpl-s
 
+# Not supported in the main branch anymore, go to stable-v2.3
+# UNSIGNED_list += bdw byt cht
+# SIGNED_list   += apl cnl icl jsl
+# ALIAS_SAME_KEY_list  += glk cfl cml
+# ALIAS_OTHER_KEY_list += ehl
 
-# Older platforms not released anymore
+# Much older platforms
 # UNSIGNED_list += hsw sue
 # SIGNED_list += kbl skl
+
+ALIAS_list := ${ALIAS_SAME_KEY_list} ${ALIAS_OTHER_KEY_list}
 
 $(info UNSIGNED_list = ${UNSIGNED_list} )
 $(info SIGNED_list   = ${SIGNED_list}   )
@@ -42,6 +46,8 @@ target_of_cml := cnl
 target_of_ehl := tgl
 target_of_adl   := tgl
 target_of_adl-s := tgl-h
+target_of_rpl   := tgl
+target_of_rpl-s := tgl-h
 
 ifeq (,${TOOLCHAIN})
   ifeq (,${XTENSA_TOOLS_ROOT})
@@ -197,7 +203,7 @@ ${BUILD_SOF_RIS}: ${BUILDS_ROOT}/build_%_${TOOLCHAIN}/sof.ri: | ${BUILDS_ROOT}
 	cd ${BUILDS_ROOT} && bdir="$$(dirname $@)" &&  \
       if [ -d $${bdir} ] && [ xcc != "${TOOLCHAIN}" ] ; then \
         cmake --build $${bdir} -- bin; else \
-      $(CURDIR)/../scripts/xtensa-build-all.sh $*; fi
+      $(CURDIR)/../scripts/xtensa-build-all.sh -i "${IPC_VERSION}" $*; fi
 
 
        ########################################
@@ -260,6 +266,8 @@ ifneq (true,${BUILD_ONLY_ONCE})
 .PHONY: ${BUILD_TOOLS}
 endif
 
+# Deploy and release only "official", top-level topology files starting
+# with the 'sof-' prefix to avoid any experimental stuff.
 topologies: ${BUILD_TOOLS}
 	install ${INSTALL_OPTS}  -t ${STAGING_SOF_TPLG}${VERSION_SUFFIX}/ \
                ${BUILD_TOOLS}/topology/sof-*.tplg
@@ -303,7 +311,7 @@ checktree:
 	cd ${STAGING_SOF_VERSION} && \
              tree -a -v --dirsfirst . >  ${BUILDS_ROOT}/staging_sof_tree.txt
 	# Update sof-apl-nocodec.tplg when adding or removing a default platform
-	diff -u tests/staging_sof_ref.txt ${BUILDS_ROOT}/staging_sof_tree.txt
+	diff -u tests/staging_sof${IPC_VERSION}_ref.txt ${BUILDS_ROOT}/staging_sof_tree.txt
 	# Check two random topologies are there
 	test -f ${STAGING_SOF_TPLG}/sof-apl-nocodec.tplg
 	test -f ${STAGING_SOF_TPLG}/sof-imx8-wm8960.tplg

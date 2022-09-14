@@ -10,15 +10,17 @@
  * \author Tomasz Lauda <tomasz.lauda@linux.intel.com>
  */
 
-#include <sof/drivers/timer.h>
-#include <sof/lib/alloc.h>
+#include <rtos/timer.h>
+#include <rtos/alloc.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/pm_runtime.h>
 #include <sof/lib/uuid.h>
 #include <sof/sof.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <ipc/topology.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(pm_runtime, CONFIG_SOF_LOG_LEVEL);
 
 /* d7f6712d-131c-45a7-82ed-6aa9dc2291ea */
 DECLARE_SOF_UUID("pm-runtime", pm_runtime_uuid, 0xd7f6712d, 0x131c, 0x45a7,
@@ -144,7 +146,7 @@ void init_dsp_r_state(enum dsp_r_state r_state)
 	r_counters = rzalloc(SOF_MEM_ZONE_SYS_SHARED, 0, SOF_MEM_CAPS_RAM, sizeof(*r_counters));
 	prd->r_counters = r_counters;
 
-	r_counters->ts = k_cycle_get_64();
+	r_counters->ts = sof_cycle_get_64();
 	r_counters->cur_r_state = r_state;
 }
 
@@ -159,7 +161,7 @@ void report_dsp_r_state(enum dsp_r_state r_state)
 	if (!r_counters || r_counters->cur_r_state == r_state)
 		return;
 
-	ts = k_cycle_get_64();
+	ts = sof_cycle_get_64();
 	delta = ts - r_counters->ts;
 
 	delta += mailbox_sw_reg_read64(SRAM_REG_R_STATE_TRACE_BASE +

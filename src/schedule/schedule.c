@@ -6,7 +6,7 @@
 
 /* Generic scheduler */
 
-#include <sof/lib/alloc.h>
+#include <rtos/alloc.h>
 #include <sof/lib/uuid.h>
 #include <sof/list.h>
 #include <sof/schedule/schedule.h>
@@ -14,6 +14,8 @@
 #include <ipc/topology.h>
 #include <errno.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(schedule, CONFIG_SOF_LOG_LEVEL);
 
 /* 3dee06de-f25a-4e10-ae1f-abc9573873ea */
 DECLARE_SOF_UUID("schedule", sch_uuid, 0x3dee06de, 0xf25a, 0x4e10,

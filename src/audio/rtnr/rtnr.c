@@ -14,12 +14,12 @@
 #include <sof/common.h>
 #include <sof/debug/panic.h>
 #include <sof/ipc/msg.h>
-#include <sof/lib/alloc.h>
+#include <rtos/alloc.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/uuid.h>
 #include <sof/list.h>
 #include <sof/platform.h>
-#include <sof/string.h>
+#include <rtos/string.h>
 #include <sof/ut.h>
 #include <sof/trace/trace.h>
 #include <ipc/control.h>
@@ -37,7 +37,6 @@
 
 #define RTNR_BLK_LENGTH			4 /* Must be power of 2 */
 #define RTNR_BLK_LENGTH_MASK	(RTNR_BLK_LENGTH - 1)
-#define RTNR_MAX_SOURCES		1 /* Microphone stream */
 
 static const struct comp_driver comp_rtnr;
 
@@ -46,6 +45,8 @@ struct rtnr_func_map {
 	enum sof_ipc_frame fmt; /**< source frame format */
 	rtnr_func func; /**< processing function */
 };
+
+LOG_MODULE_REGISTER(rtnr, CONFIG_SOF_LOG_LEVEL);
 
 /* UUID 5c7ca334-e15d-11eb-ba80-0242ac130004 */
 DECLARE_SOF_RT_UUID("rtnr", rtnr_uuid, 0x5c7ca334, 0xe15d, 0x11eb, 0xba, 0x80,
@@ -101,9 +102,8 @@ void rtk_rfree(void *ptr)
 
 #if CONFIG_FORMAT_S16LE
 
-static void rtnr_s16_default(struct comp_dev *dev, const struct audio_stream **sources,
-							struct audio_stream *sink, int frames)
-
+static void rtnr_s16_default(struct comp_dev *dev, struct audio_stream_rtnr **sources,
+							struct audio_stream_rtnr *sink, int frames)
 {
 	struct comp_data *cd = comp_get_drvdata(dev);
 
@@ -116,9 +116,8 @@ static void rtnr_s16_default(struct comp_dev *dev, const struct audio_stream **s
 
 #if CONFIG_FORMAT_S24LE
 
-static void rtnr_s24_default(struct comp_dev *dev, const struct audio_stream **sources,
-							struct audio_stream *sink, int frames)
-
+static void rtnr_s24_default(struct comp_dev *dev, struct audio_stream_rtnr **sources,
+							struct audio_stream_rtnr *sink, int frames)
 {
 	struct comp_data *cd = comp_get_drvdata(dev);
 
@@ -131,9 +130,8 @@ static void rtnr_s24_default(struct comp_dev *dev, const struct audio_stream **s
 
 #if CONFIG_FORMAT_S32LE
 
-static void rtnr_s32_default(struct comp_dev *dev, const struct audio_stream **sources,
-							struct audio_stream *sink, int frames)
-
+static void rtnr_s32_default(struct comp_dev *dev, struct audio_stream_rtnr **sources,
+							struct audio_stream_rtnr *sink, int frames)
 {
 	struct comp_data *cd = comp_get_drvdata(dev);
 
@@ -182,24 +180,6 @@ static rtnr_func rtnr_find_func(enum sof_ipc_frame fmt)
 	return NULL;
 }
 
-static inline void rtnr_set_process(struct comp_dev *dev)
-{
-	comp_info(dev, "rtnr_set_process()");
-	struct comp_data *cd = comp_get_drvdata(dev);
-
-	cd->process_enable = true;
-	RTKMA_API_Bypass(cd->rtk_agl, 0);
-}
-
-static inline void rtnr_set_bypass(struct comp_dev *dev)
-{
-	comp_info(dev, "rtnr_set_bypass()");
-	struct comp_data *cd = comp_get_drvdata(dev);
-
-	cd->process_enable = false;
-	RTKMA_API_Bypass(cd->rtk_agl, 1);
-}
-
 static inline void rtnr_set_process_sample_rate(struct comp_dev *dev, uint32_t sample_rate)
 {
 	comp_dbg(dev, "rtnr_set_process_sample_rate()");
@@ -218,25 +198,14 @@ static int32_t rtnr_check_config_validity(struct comp_dev *dev,
 		comp_err(dev, "rtnr_check_config_validity() error: invalid cd->model_handler");
 		ret = -EINVAL;
 	} else {
-		comp_info(dev, "rtnr_check_config_validity() enabled: %d sample_rate:%d",
-				p_config->params.enabled,
+		comp_info(dev, "rtnr_check_config_validity() sample_rate:%d",
 				p_config->params.sample_rate);
-
-		if (p_config->params.enabled)
-			rtnr_set_process(dev);
-		else
-			rtnr_set_bypass(dev);
 
 		rtnr_set_process_sample_rate(dev, p_config->params.sample_rate);
 	}
 
 	return ret;
 }
-
-
-/*
- * End of RTNR setup code. Next the standard component methods.
- */
 
 static struct comp_dev *rtnr_new(const struct comp_driver *drv,
 								struct comp_ipc_config *config,
@@ -271,6 +240,8 @@ static struct comp_dev *rtnr_new(const struct comp_driver *drv,
 
 	comp_set_drvdata(dev, cd);
 
+	cd->process_enable = true;
+
 	/* Handler for configuration data */
 	cd->model_handler = comp_data_blob_handler_new(dev);
 	if (!cd->model_handler) {
@@ -288,7 +259,7 @@ static struct comp_dev *rtnr_new(const struct comp_driver *drv,
 	/* Component defaults */
 	cd->source_channel = 0;
 
-    /* Check config */
+	/* Get default sample rate from topology */
 	ret = rtnr_check_config_validity(dev, cd);
 	if (ret < 0) {
 		comp_cl_err(&comp_rtnr, "rtnr_new(): rtnr_check_config_validity() failed.");
@@ -334,8 +305,9 @@ static int rtnr_params(struct comp_dev *dev, struct sof_ipc_stream_params *param
 {
 	int ret;
 	struct comp_data *cd = comp_get_drvdata(dev);
-	struct comp_buffer *sinkb;
-	struct comp_buffer *sourceb;
+	struct comp_buffer *sinkb, *sourceb;
+	struct comp_buffer __sparse_cache *sink_c, *source_c;
+	bool channels_valid;
 
 	comp_info(dev, "rtnr_params()");
 
@@ -350,16 +322,24 @@ static int rtnr_params(struct comp_dev *dev, struct sof_ipc_stream_params *param
 	sinkb = list_first_item(&dev->bsink_list, struct comp_buffer,
 							source_list);
 
+	source_c = buffer_acquire(sourceb);
+	sink_c = buffer_acquire(sinkb);
+
 	/* set source/sink_frames/rate */
-	cd->source_rate = sourceb->stream.rate;
-	cd->sink_rate = sinkb->stream.rate;
+	cd->source_rate = source_c->stream.rate;
+	cd->sink_rate = sink_c->stream.rate;
+	cd->sources_stream[0].rate = source_c->stream.rate;
+	cd->sink_stream.rate = sink_c->stream.rate;
+	channels_valid = source_c->stream.channels == sink_c->stream.channels;
+
 	if (!cd->sink_rate) {
 		comp_err(dev, "rtnr_nr_params(), zero sink rate");
-		return -EINVAL;
+		ret = -EINVAL;
+		goto out;
 	}
 
 	/* Currently support 16kHz sample rate only. */
-	switch (sourceb->stream.rate) {
+	switch (cd->source_rate) {
 	case 16000:
 		comp_info(dev, "rtnr_params(), sample rate = 16000 kHz");
 		break;
@@ -368,16 +348,32 @@ static int rtnr_params(struct comp_dev *dev, struct sof_ipc_stream_params *param
 		break;
 	default:
 		comp_err(dev, "rtnr_nr_params(), invalid sample rate(%d kHz)",
-				 sourceb->stream.rate);
-		return -EINVAL;
+			 cd->source_rate);
+		ret = -EINVAL;
+		goto out;
 	}
 
-	if (sourceb->stream.channels != 2 || sinkb->stream.channels != 2) {
-		comp_err(dev, "rtnr_params(), source/sink stream must be 2 channels");
-		return -EINVAL;
+	if (!channels_valid) {
+		comp_err(dev, "rtnr_params(), source/sink stream must have same channels");
+		ret = -EINVAL;
+		goto out;
 	}
 
-	return 0;
+	/* set source/sink stream channels */
+	cd->sources_stream[0].channels = source_c->stream.channels;
+	cd->sink_stream.channels = sink_c->stream.channels;
+
+	/* set source/sink stream overrun/underrun permitted */
+	cd->sources_stream[0].overrun_permitted = source_c->stream.overrun_permitted;
+	cd->sink_stream.overrun_permitted = sink_c->stream.overrun_permitted;
+	cd->sources_stream[0].underrun_permitted = source_c->stream.underrun_permitted;
+	cd->sink_stream.underrun_permitted = sink_c->stream.underrun_permitted;
+
+out:
+	buffer_release(sink_c);
+	buffer_release(source_c);
+
+	return ret;
 }
 
 static int rtnr_cmd_get_data(struct comp_dev *dev,
@@ -417,9 +413,6 @@ static int rtnr_cmd_set_data(struct comp_dev *dev,
 		break;
 	}
 
-	if (ret >= 0)
-		ret = rtnr_check_config_validity(dev, cd);
-
 	return ret;
 }
 
@@ -451,16 +444,20 @@ static int32_t rtnr_set_value(struct comp_dev *dev, struct sof_ipc_ctrl_data *cd
 {
 	uint32_t val = 0;
 	int32_t j;
+	struct comp_data *cd = comp_get_drvdata(dev);
 
 	for (j = 0; j < cdata->num_elems; j++) {
 		val |= cdata->chanv[j].value;
 		comp_info(dev, "rtnr_set_value(), value = %u", val);
 	}
 
-	if (val)
-		rtnr_set_process(dev);
-	else
-		rtnr_set_bypass(dev);
+	if (val) {
+		comp_info(dev, "rtnr_set_value(): enabled");
+		cd->process_enable = true;
+	} else {
+		comp_info(dev, "rtnr_set_value(): passthrough");
+		cd->process_enable = false;
+	}
 
 	return 0;
 }
@@ -522,6 +519,31 @@ static int rtnr_trigger(struct comp_dev *dev, int cmd)
 	return comp_set_state(dev, cmd);
 }
 
+static void rtnr_copy_from_sof_stream(struct audio_stream_rtnr *dst,
+				      struct audio_stream __sparse_cache *src)
+{
+
+	dst->size = src->size;
+	dst->avail = src->avail;
+	dst->free = src->free;
+	dst->w_ptr = src->w_ptr;
+	dst->r_ptr = src->r_ptr;
+	dst->addr = src->addr;
+	dst->end_addr = src->end_addr;
+}
+
+static void rtnr_copy_to_sof_stream(struct audio_stream __sparse_cache *dst,
+				    struct audio_stream_rtnr *src)
+{
+	dst->size = src->size;
+	dst->avail = src->avail;
+	dst->free = src->free;
+	dst->w_ptr = src->w_ptr;
+	dst->r_ptr = src->r_ptr;
+	dst->addr = src->addr;
+	dst->end_addr = src->end_addr;
+}
+
 /* copy and process stream data from source to sink buffers */
 static int rtnr_copy(struct comp_dev *dev)
 {
@@ -530,8 +552,14 @@ static int rtnr_copy(struct comp_dev *dev)
 	int frames;
 	int sink_bytes;
 	int source_bytes;
-	const struct audio_stream *sources_stream[RTNR_MAX_SOURCES] = { NULL };
+	struct comp_copy_limits cl;
 	struct comp_data *cd = comp_get_drvdata(dev);
+	struct audio_stream_rtnr *sources_stream[RTNR_MAX_SOURCES];
+	struct audio_stream_rtnr *sink_stream = &cd->sink_stream;
+	int32_t i;
+
+	for (i = 0; i < RTNR_MAX_SOURCES; ++i)
+		sources_stream[i] = &cd->sources_stream[i];
 
 	comp_dbg(dev, "rtnr_copy()");
 
@@ -541,41 +569,65 @@ static int rtnr_copy(struct comp_dev *dev)
 	RTKMA_API_First_Copy(cd->rtk_agl, cd->source_rate, source->stream.channels);
 
 	sink = list_first_item(&dev->bsink_list, struct comp_buffer, source_list);
-	frames = audio_stream_avail_frames(&source->stream, &sink->stream);
 
-	/* Process integer multiple of RTNR internal block length */
-	frames = frames & ~RTNR_BLK_LENGTH_MASK;
+	if (cd->process_enable) {
+		frames = audio_stream_avail_frames(&source->stream, &sink->stream);
 
-	comp_dbg(dev, "rtnr_copy() source->id: %d, frames = %d", source->id, frames);
+		/* Process integer multiple of RTNR internal block length */
+		frames = frames & ~RTNR_BLK_LENGTH_MASK;
 
-	if (frames) {
-		source_bytes = frames * audio_stream_frame_bytes(&source->stream);
-		sink_bytes = frames * audio_stream_frame_bytes(&sink->stream);
+		comp_dbg(dev, "rtnr_copy() source->id: %d, frames = %d", source->id, frames);
 
-		buffer_stream_invalidate(source, source_bytes);
+		if (frames) {
+			source_bytes = frames * audio_stream_frame_bytes(&source->stream);
+			sink_bytes = frames * audio_stream_frame_bytes(&sink->stream);
 
-		/* Run processing function */
+			buffer_stream_invalidate(source, source_bytes);
 
-		/*
-		 * Processing function uses an array of pointers to source streams
-		 * as parameter.
-		 */
-		sources_stream[0] = &source->stream;
-		cd->rtnr_func(dev, sources_stream, &sink->stream, frames);
+			/* Run processing function */
 
-		/*
-		 * real process function of rtnr, consume/produce data from internal queue
-		 * instead of component buffer
-		 */
-		RTKMA_API_Process(cd->rtk_agl, 0, cd->source_rate, MicNum);
+			/* copy required data from sof audio stream to RTNR audio stream */
+			rtnr_copy_from_sof_stream(sources_stream[0], &source->stream);
+			rtnr_copy_from_sof_stream(sink_stream, &sink->stream);
 
-		buffer_stream_writeback(sink, sink_bytes);
+			/*
+			 * Processing function uses an array of pointers to source streams
+			 * as parameter.
+			 */
+			cd->rtnr_func(dev, (struct audio_stream_rtnr **)&sources_stream,
+						sink_stream, frames);
 
-		/* Track consume and produce */
-		comp_update_buffer_consume(source, source_bytes);
-		comp_update_buffer_produce(sink, sink_bytes);
+			/*
+			 * real process function of rtnr, consume/produce data from internal queue
+			 * instead of component buffer
+			 */
+			RTKMA_API_Process(cd->rtk_agl, 0, cd->source_rate, MicNum);
+
+			/* copy required data from RTNR audio stream to sof audio stream */
+			rtnr_copy_to_sof_stream(&source->stream, sources_stream[0]);
+			rtnr_copy_to_sof_stream(&sink->stream, sink_stream);
+
+			buffer_stream_writeback(sink, sink_bytes);
+
+			/* Track consume and produce */
+			comp_update_buffer_consume(source, source_bytes);
+			comp_update_buffer_produce(sink, sink_bytes);
+		}
+	} else {
+		comp_dbg(dev, "rtnr_copy() passthrough");
+
+		/* Get source, sink, number of frames etc. to process. */
+		comp_get_copy_limits_with_lock(source, sink, &cl);
+
+		buffer_stream_invalidate(source, cl.source_bytes);
+
+		audio_stream_copy(&source->stream, 0, &sink->stream, 0,
+				source->stream.channels * cl.frames);
+
+		buffer_stream_writeback(sink, cl.sink_bytes);
+		comp_update_buffer_consume(source, cl.source_bytes);
+		comp_update_buffer_produce(sink, cl.sink_bytes);
 	}
-
 
 	return 0;
 }
@@ -584,9 +636,10 @@ static int rtnr_prepare(struct comp_dev *dev)
 {
 	struct comp_data *cd = comp_get_drvdata(dev);
 	struct comp_buffer *sinkb;
+	struct comp_buffer __sparse_cache *sink_c;
 	int ret;
 
-	comp_info(dev, "rtnr_prepare()");
+	comp_dbg(dev, "rtnr_prepare()");
 
 	ret = comp_set_state(dev, COMP_TRIGGER_PREPARE);
 	if (ret < 0)
@@ -595,11 +648,23 @@ static int rtnr_prepare(struct comp_dev *dev)
 	if (ret == COMP_STATUS_STATE_ALREADY_SET)
 		return PPL_STATUS_PATH_STOP;
 
+	/* Check config */
+	ret = rtnr_check_config_validity(dev, cd);
+	if (ret < 0) {
+		comp_cl_err(&comp_rtnr, "rtnr_prepare(): rtnr_check_config_validity() failed.");
+		goto err;
+	}
+
+	/* Initialize RTNR */
+
 	/* Get sink data format */
 	sinkb = list_first_item(&dev->bsink_list, struct comp_buffer, source_list);
-	cd->sink_format = sinkb->stream.frame_fmt;
+	sink_c = buffer_acquire(sinkb);
+	cd->sink_format = sink_c->stream.frame_fmt;
+	cd->sink_stream.frame_fmt = sink_c->stream.frame_fmt;
+	buffer_release(sink_c);
 
-	/* Check source and sink PCM format and get copy function */
+	/* Check source and sink PCM format and get processing function */
 	comp_info(dev, "rtnr_prepare(), sink_format=%d", cd->sink_format);
 	cd->rtnr_func = rtnr_find_func(cd->sink_format);
 	if (!cd->rtnr_func) {
@@ -607,13 +672,9 @@ static int rtnr_prepare(struct comp_dev *dev)
 		goto err;
 	}
 
-	/* Default on */
-	cd->process_enable = true;
-
 	/* Clear in/out buffers */
 	RTKMA_API_Prepare(cd->rtk_agl);
 
-	/* Initialize RTNR */
 	return 0;
 
 err:
@@ -626,8 +687,12 @@ static int rtnr_reset(struct comp_dev *dev)
 	struct comp_data *cd = comp_get_drvdata(dev);
 
 	comp_info(dev, "rtnr_reset()");
+
 	cd->sink_format = 0;
 	cd->rtnr_func = NULL;
+	cd->source_rate = 0;
+	cd->sink_rate = 0;
+
 	comp_set_state(dev, COMP_TRIGGER_RESET);
 	return 0;
 }

@@ -13,14 +13,14 @@
 #include <sof/math/numbers.h>
 #include <sof/common.h>
 #include <sof/debug/panic.h>
-#include <sof/lib/alloc.h>
-#include <sof/lib/cache.h>
+#include <rtos/alloc.h>
+#include <rtos/cache.h>
 #include <sof/lib/uuid.h>
 #include <sof/list.h>
 #include <sof/coherent.h>
 #include <sof/math/numbers.h>
-#include <sof/spinlock.h>
-#include <sof/string.h>
+#include <rtos/spinlock.h>
+#include <rtos/string.h>
 #include <sof/trace/trace.h>
 #include <ipc/stream.h>
 #include <ipc/topology.h>
@@ -49,29 +49,50 @@ extern struct tr_ctx buffer_tr;
 /** \brief Retrieves subid (comp id) from the buffer */
 #define trace_buf_get_subid(buf_ptr) ((buf_ptr)->id)
 
+#if defined(__ZEPHYR__) && defined(CONFIG_ZEPHYR_LOG)
+
+#define buf_err(buf_ptr, __e, ...) LOG_ERR(__e, ##__VA_ARGS__)
+
+#define buf_warn(buf_ptr, __e, ...) LOG_WRN(__e, ##__VA_ARGS__)
+
+#define buf_info(buf_ptr, __e, ...) LOG_INF(__e, ##__VA_ARGS__)
+
+#define buf_dbg(buf_ptr, __e, ...) LOG_DBG(__e, ##__VA_ARGS__)
+
+#else
 /** \brief Trace error message from buffer */
-#define buf_err(buf_ptr, __e, ...)					\
-	trace_dev_err(trace_buf_get_tr_ctx, trace_buf_get_id,		\
-		      trace_buf_get_subid, buf_ptr, __e, ##__VA_ARGS__)
+#define buf_err(buf_ptr, __e, ...)						\
+	trace_dev_err(trace_buf_get_tr_ctx, trace_buf_get_id,			\
+		      trace_buf_get_subid,					\
+		      (__sparse_force const struct comp_buffer *)buf_ptr,	\
+		      __e, ##__VA_ARGS__)
 
 /** \brief Trace warning message from buffer */
-#define buf_warn(buf_ptr, __e, ...)					\
-	trace_dev_warn(trace_buf_get_tr_ctx, trace_buf_get_id,	\
-		       trace_buf_get_subid, buf_ptr, __e, ##__VA_ARGS__)
+#define buf_warn(buf_ptr, __e, ...)						\
+	trace_dev_warn(trace_buf_get_tr_ctx, trace_buf_get_id,			\
+		       trace_buf_get_subid,					\
+		       (__sparse_force const struct comp_buffer *)buf_ptr,	\
+		        __e, ##__VA_ARGS__)
 
 /** \brief Trace info message from buffer */
-#define buf_info(buf_ptr, __e, ...)					\
-	trace_dev_info(trace_buf_get_tr_ctx, trace_buf_get_id,	\
-		       trace_buf_get_subid, buf_ptr, __e, ##__VA_ARGS__)
+#define buf_info(buf_ptr, __e, ...)						\
+	trace_dev_info(trace_buf_get_tr_ctx, trace_buf_get_id,			\
+		       trace_buf_get_subid,					\
+		       (__sparse_force const struct comp_buffer *)buf_ptr,	\
+		       __e, ##__VA_ARGS__)
 
 /** \brief Trace debug message from buffer */
 #if defined(CONFIG_LIBRARY)
 #define buf_dbg(buf_ptr, __e, ...)
 #else
-#define buf_dbg(buf_ptr, __e, ...)					\
-	trace_dev_dbg(trace_buf_get_tr_ctx, trace_buf_get_id,		\
-		      trace_buf_get_subid, buf_ptr, __e, ##__VA_ARGS__)
+#define buf_dbg(buf_ptr, __e, ...)						\
+	trace_dev_dbg(trace_buf_get_tr_ctx, trace_buf_get_id,			\
+		      trace_buf_get_subid,					\
+		      (__sparse_force const struct comp_buffer *)buf_ptr,	\
+		      __e, ##__VA_ARGS__)
 #endif
+
+#endif /* #if defined(__ZEPHYR__) && defined(CONFIG_ZEPHYR_LOG) */
 
 /** @}*/
 
@@ -127,11 +148,12 @@ struct comp_buffer {
 	uint16_t chmap[SOF_IPC_MAX_CHANNELS];	/**< channel map - SOF_CHMAP_ */
 
 	bool hw_params_configured; /**< indicates whether hw params were set */
-	bool walking;	/**< indicates if the buffer is being walking */
+	bool walking;		/**< indicates if the buffer is being walked */
 };
 
+/* Only to be used for synchronous same-core notifications! */
 struct buffer_cb_transact {
-	struct comp_buffer *buffer;
+	struct comp_buffer __sparse_cache *buffer;
 	uint32_t transaction_amount;
 	void *transaction_begin_address;
 };
@@ -149,18 +171,6 @@ struct buffer_cb_free {
 	 container_of(ptr, type, source_list) : \
 	 container_of(ptr, type, sink_list))
 
-#define buffer_get_comp(buffer, dir) \
-	((dir) == PPL_DIR_DOWNSTREAM ? buffer->sink : \
-	 buffer->source)
-
-#define buffer_set_comp(buffer, comp, dir) \
-	do {						\
-		if (dir == PPL_CONN_DIR_COMP_TO_BUFFER)	\
-			buffer->source = comp;		\
-		else					\
-			buffer->sink = comp;		\
-	} while (0)					\
-
 #define buffer_set_cb(buffer, func, data, type) \
 	do {				\
 		buffer->cb = func;	\
@@ -171,23 +181,24 @@ struct buffer_cb_free {
 /* pipeline buffer creation and destruction */
 struct comp_buffer *buffer_alloc(uint32_t size, uint32_t caps, uint32_t align);
 struct comp_buffer *buffer_new(const struct sof_ipc_buffer *desc);
-int buffer_set_size(struct comp_buffer *buffer, uint32_t size);
+int buffer_set_size(struct comp_buffer __sparse_cache *buffer, uint32_t size);
 void buffer_free(struct comp_buffer *buffer);
-void buffer_zero(struct comp_buffer *buffer);
+void buffer_zero(struct comp_buffer __sparse_cache *buffer);
 
 /* called by a component after producing data into this buffer */
-void comp_update_buffer_produce(struct comp_buffer *buffer, uint32_t bytes);
+void comp_update_buffer_produce(struct comp_buffer __sparse_cache *buffer, uint32_t bytes);
 
 /* called by a component after consuming data from this buffer */
-void comp_update_buffer_consume(struct comp_buffer *buffer, uint32_t bytes);
+void comp_update_buffer_consume(struct comp_buffer __sparse_cache *buffer, uint32_t bytes);
 
-int buffer_set_params(struct comp_buffer *buffer, struct sof_ipc_stream_params *params,
-		      bool force_update);
+int buffer_set_params(struct comp_buffer __sparse_cache *buffer,
+		      struct sof_ipc_stream_params *params, bool force_update);
 
-bool buffer_params_match(struct comp_buffer *buffer, struct sof_ipc_stream_params *params,
-			 uint32_t flag);
+bool buffer_params_match(struct comp_buffer __sparse_cache *buffer,
+			 struct sof_ipc_stream_params *params, uint32_t flag);
 
-static inline void buffer_stream_invalidate(struct comp_buffer *buffer, uint32_t bytes)
+static inline void buffer_stream_invalidate(struct comp_buffer __sparse_cache *buffer,
+					    uint32_t bytes)
 {
 	if (!is_coherent_shared(buffer, c))
 		return;
@@ -195,7 +206,8 @@ static inline void buffer_stream_invalidate(struct comp_buffer *buffer, uint32_t
 	audio_stream_invalidate(&buffer->stream, bytes);
 }
 
-static inline void buffer_stream_writeback(struct comp_buffer *buffer, uint32_t bytes)
+static inline void buffer_stream_writeback(struct comp_buffer __sparse_cache *buffer,
+					   uint32_t bytes)
 {
 	if (!is_coherent_shared(buffer, c))
 		return;
@@ -203,34 +215,40 @@ static inline void buffer_stream_writeback(struct comp_buffer *buffer, uint32_t 
 	audio_stream_writeback(&buffer->stream, bytes);
 }
 
-__must_check static inline struct comp_buffer *buffer_acquire(struct comp_buffer *buffer)
+__must_check static inline struct comp_buffer __sparse_cache *buffer_acquire(
+	struct comp_buffer *buffer)
 {
-	struct coherent *c = coherent_acquire_thread(&buffer->c, sizeof(*buffer));
+	struct coherent __sparse_cache *c = coherent_acquire_thread(&buffer->c, sizeof(*buffer));
 
-	return container_of(c, struct comp_buffer, c);
+	return attr_container_of(c, struct comp_buffer __sparse_cache, c, __sparse_cache);
 }
 
-static inline struct comp_buffer *buffer_release(struct comp_buffer *buffer)
+static inline void buffer_release(struct comp_buffer __sparse_cache *buffer)
 {
-	struct coherent *c = coherent_release_thread(&buffer->c, sizeof(*buffer));
-
-	return container_of(c, struct comp_buffer, c);
+	coherent_release_thread(&buffer->c, sizeof(*buffer));
 }
 
-static inline void buffer_reset_pos(struct comp_buffer *buffer, void *data)
+static inline struct comp_dev *buffer_get_comp(struct comp_buffer *buffer, int dir)
 {
-	buffer = buffer_acquire(buffer);
+	struct comp_buffer __sparse_cache *buffer_c = buffer_acquire(buffer);
+	struct comp_dev *comp = dir == PPL_DIR_DOWNSTREAM ? buffer_c->sink :
+		buffer_c->source;
+	buffer_release(buffer_c);
+	return comp;
+}
 
+static inline void buffer_reset_pos(struct comp_buffer __sparse_cache *buffer, void *data)
+{
 	/* reset rw pointers and avail/free bytes counters */
 	audio_stream_reset(&buffer->stream);
 
 	/* clear buffer contents */
 	buffer_zero(buffer);
-
-	buffer = buffer_release(buffer);
 }
 
-static inline void buffer_init(struct comp_buffer *buffer, uint32_t size, uint32_t caps)
+/* Run-time buffer re-configuration calls this too, so it must use cached access */
+static inline void buffer_init(struct comp_buffer __sparse_cache *buffer,
+			       uint32_t size, uint32_t caps)
 {
 	buffer->caps = caps;
 
@@ -238,13 +256,9 @@ static inline void buffer_init(struct comp_buffer *buffer, uint32_t size, uint32
 	audio_stream_init(&buffer->stream, buffer->stream.addr, size);
 }
 
-static inline void buffer_reset_params(struct comp_buffer *buffer, void *data)
+static inline void buffer_reset_params(struct comp_buffer __sparse_cache *buffer, void *data)
 {
-	buffer = buffer_acquire(buffer);
-
 	buffer->hw_params_configured = false;
-
-	buffer = buffer_release(buffer);
 }
 
 #endif /* __SOF_AUDIO_BUFFER_H__ */

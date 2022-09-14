@@ -11,13 +11,13 @@
 #include <sof/common.h>
 #include <sof/drivers/alh.h>
 #include <sof/drivers/idc.h>
-#include <sof/lib/alloc.h>
+#include <rtos/alloc.h>
 #include <sof/lib/dai.h>
 #include <sof/lib/notifier.h>
 #include <sof/platform.h>
 #include <sof/sof.h>
 #include <ipc4/gateway.h>
-#include <ipc4/header.h>
+#include <ipc/header.h>
 #include <ipc4/alh.h>
 #include <ipc4/ssp.h>
 #include <ipc4/copier.h>
@@ -28,10 +28,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+LOG_MODULE_DECLARE(ipc, CONFIG_SOF_LOG_LEVEL);
+
 int dai_config_dma_channel(struct comp_dev *dev, void *spec_config)
 {
 	struct ipc4_copier_module_cfg *copier_cfg = spec_config;
-	union ipc4_connector_node_id node;
 	struct dai_data *dd = comp_get_drvdata(dev);
 	struct ipc_config_dai *dai = &dd->ipc_config;
 	int channel;
@@ -43,8 +44,7 @@ int dai_config_dma_channel(struct comp_dev *dev, void *spec_config)
 		channel = 0;
 		break;
 	case SOF_DAI_INTEL_HDA:
-		node.dw = copier_cfg->gtw_cfg.node_id;
-		channel = node.f.v_index;
+		channel = copier_cfg->gtw_cfg.node_id.f.v_index;
 		break;
 	case SOF_DAI_INTEL_ALH:
 		/* As with HDA, the DMA channel is assigned in runtime,
@@ -66,9 +66,11 @@ int ipc_dai_data_config(struct comp_dev *dev)
 {
 	struct dai_data *dd = comp_get_drvdata(dev);
 	struct ipc_config_dai *dai = &dd->ipc_config;
-	struct ipc4_copier_module_cfg *copier_cfg;
+	struct ipc4_copier_module_cfg *copier_cfg = dd->dai_spec_config;
 	struct dai *dai_p = dd->dai;
+#ifndef CONFIG_ZEPHYR_NATIVE_DRIVERS
 	struct alh_pdata *alh;
+#endif
 
 	if (!dai) {
 		comp_err(dev, "dai_data_config(): no dai!\n");
@@ -86,7 +88,6 @@ int ipc_dai_data_config(struct comp_dev *dev)
 
 	switch (dai->type) {
 	case SOF_DAI_INTEL_SSP:
-		copier_cfg = dd->dai_spec_config;
 		/* set dma burst elems to slot number */
 		dd->config.burst_elems = copier_cfg->base.audio_fmt.channels_count;
 		/* DMA buffer size is in fixed format of 32bit in IPC4 case */
@@ -94,26 +95,29 @@ int ipc_dai_data_config(struct comp_dev *dev)
 		break;
 	case SOF_DAI_INTEL_DMIC:
 		/* Depth is passed by DMIC driver that retrieves it from blob */
-		dd->config.burst_elems = dd->dai->plat_data.fifo->depth;
+		dd->config.burst_elems = dai_get_fifo_depth(dd->dai, dai->direction);
 		comp_info(dev, "dai_data_config() burst_elems = %d", dd->config.burst_elems);
 		break;
 	case SOF_DAI_INTEL_HDA:
 		break;
 	case SOF_DAI_INTEL_ALH:
+#ifdef CONFIG_ZEPHYR_NATIVE_DRIVERS
+		dd->stream_id = dai_get_stream_id(dai_p, dai->direction);
+#else
 		alh = dai_get_drvdata(dai_p);
+		/* As with HDA, the DMA channel is assigned in runtime,
+		 * not during topology parsing.
+		 */
+		dd->stream_id = alh->params.stream_id;
+#endif
 		/* SDW HW FIFO always requires 32bit MSB aligned sample data for
 		 * all formats, such as 8/16/24/32 bits.
 		 */
 		dev->ipc_config.frame_fmt = SOF_IPC_FRAME_S32_LE;
 		dd->dma_buffer->stream.frame_fmt = dev->ipc_config.frame_fmt;
 
-		dd->config.burst_elems =
-			dd->dai->plat_data.fifo[dai->direction].depth;
+		dd->config.burst_elems = dai_get_fifo_depth(dd->dai, dai->direction);
 
-		/* As with HDA, the DMA channel is assigned in runtime,
-		 * not during topology parsing.
-		 */
-		dd->stream_id = alh->params.stream_id;
 
 		comp_dbg(dev, "dai_data_config() SOF_DAI_INTEL_ALH dd->dma_buffer->stream.frame_fmt %#x stream_id %d",
 			 dd->dma_buffer->stream.frame_fmt, dd->stream_id);
@@ -123,6 +127,8 @@ int ipc_dai_data_config(struct comp_dev *dev)
 		comp_warn(dev, "dai_data_config(): Unknown dai type %d", dai->type);
 		return -EINVAL;
 	}
+
+	dai->dma_buffer_size = copier_cfg->gtw_cfg.dma_buffer_size;
 
 	/* some DAIs may not need extra config */
 	return 0;
@@ -135,14 +141,15 @@ int ipc_comp_dai_config(struct ipc *ipc, struct ipc_config_dai *common_config,
 	return 0;
 }
 
-static void get_llp_reg_info(struct dai_data *dd, uint32_t *node_id, uint32_t *offset)
+static void get_llp_reg_info(struct comp_dev *dev, uint32_t *node_id, uint32_t *offset)
 {
+	struct dai_data *dd = comp_get_drvdata(dev);
 	struct ipc4_copier_module_cfg *copier_cfg;
 	union ipc4_connector_node_id node;
 	uint32_t id;
 
 	copier_cfg = dd->dai_spec_config;
-	node.dw = copier_cfg->gtw_cfg.node_id;
+	node = copier_cfg->gtw_cfg.node_id;
 	/* 13 bits of type + index */
 	*node_id = node.dw & 0x1FFF;
 	id = node.f.v_index;
@@ -152,18 +159,32 @@ static void get_llp_reg_info(struct dai_data *dd, uint32_t *node_id, uint32_t *o
 		/* nothing to do since GP-DMA is not used by HDA */
 		*offset = 0;
 		*node_id = 0;
+		break;
 	case SOF_DAI_INTEL_ALH:
 		/* id = group id << 4 + codec id + IPC4_ALH_DAI_INDEX_OFFSET
 		 * memory location = group id * 4 + codec id
 		 */
 		id =  ((id >> 4) & 0xF) * DAI_NUM_ALH_BI_DIR_LINKS_GROUP +
 			(id & 0xF) - IPC4_ALH_DAI_INDEX_OFFSET;
-		*offset = offsetof(struct ipc4_fw_registers, llp_sndw_reading_slots);
-		*offset += id * sizeof(struct ipc4_llp_reading_slot);
+
+		if (id < IPC4_MAX_LLP_SNDW_READING_SLOTS) {
+			*offset = offsetof(struct ipc4_fw_registers, llp_sndw_reading_slots);
+			*offset += id * sizeof(struct ipc4_llp_reading_slot);
+		} else {
+			comp_err(dev, "get_llp_reg_info(): sndw id %u out of array bounds.", id);
+			*node_id = 0;
+		}
+
 		break;
 	default:
-		*offset = offsetof(struct ipc4_fw_registers, llp_gpdma_reading_slots);
-		*offset += id * sizeof(struct ipc4_llp_reading_slot);
+		if (id < IPC4_MAX_LLP_GPDMA_READING_SLOTS) {
+			*offset = offsetof(struct ipc4_fw_registers, llp_gpdma_reading_slots);
+			*offset += id * sizeof(struct ipc4_llp_reading_slot);
+		} else {
+			comp_err(dev, "get_llp_reg_info(): gpdma id %u out of array bounds.", id);
+			*node_id = 0;
+		}
+
 		break;
 	}
 }
@@ -184,7 +205,7 @@ void dai_dma_release(struct comp_dev *dev)
 		uint32_t llp_reg_offset;
 		uint32_t node_id;
 
-		get_llp_reg_info(dd, &node_id, &llp_reg_offset);
+		get_llp_reg_info(dev, &node_id, &llp_reg_offset);
 		if (node_id) {
 			/* reset llp position to 0 in memory window for reset state.
 			 * clear node id and llp position to 0 when dai is free
@@ -201,23 +222,31 @@ void dai_dma_release(struct comp_dev *dev)
 		 * pause to stop.
 		 * TODO: refine power management when stream is paused
 		 */
-		dma_stop(dd->chan);
+#if CONFIG_ZEPHYR_NATIVE_DRIVERS
+		dma_stop(dd->chan->dma->z_dev, dd->chan->index);
 
 		/* remove callback */
 		notifier_unregister(dev, dd->chan, NOTIFIER_ID_DMA_COPY);
-		dma_channel_put(dd->chan);
+		dma_release_channel(dd->chan->dma->z_dev, dd->chan->index);
+#else
+		dma_stop_legacy(dd->chan);
+
+		/* remove callback */
+		notifier_unregister(dev, dd->chan, NOTIFIER_ID_DMA_COPY);
+		dma_channel_put_legacy(dd->chan);
+#endif
 		dd->chan->dev_data = NULL;
 		dd->chan = NULL;
 	}
 }
 
-static void dai_dma_position_init(struct dai_data *dd)
+static void dai_dma_position_init(struct comp_dev *dev)
 {
 	struct ipc4_llp_reading_slot slot;
 	uint32_t llp_reg_offset;
 	uint32_t node_id;
 
-	get_llp_reg_info(dd, &node_id, &llp_reg_offset);
+	get_llp_reg_info(dev, &node_id, &llp_reg_offset);
 	if (!node_id)
 		return;
 
@@ -254,16 +283,19 @@ int dai_config(struct comp_dev *dev, struct ipc_config_dai *common_config,
 		return 0;
 	}
 
+#if CONFIG_COMP_DAI_GROUP
 	if (common_config->group_id) {
 		ret = dai_assign_group(dev, common_config->group_id);
 
 		if (ret)
 			return ret;
 	}
-
+#endif
 	/* do nothing for asking for channel free, for compatibility. */
 	if (dai_config_dma_channel(dev, spec_config) == DMA_CHAN_INVALID)
 		return 0;
+
+	dd->dai_dev = dev;
 
 	/* allocated dai_config if not yet */
 	if (!dd->dai_spec_config) {
@@ -282,7 +314,7 @@ int dai_config(struct comp_dev *dev, struct ipc_config_dai *common_config,
 		}
 	}
 
-	dai_dma_position_init(dd);
+	dai_dma_position_init(dev);
 
 	return dai_set_config(dd->dai, common_config, copier_cfg->gtw_cfg.config_data);
 }
@@ -293,13 +325,13 @@ int dai_position(struct comp_dev *dev, struct sof_ipc_stream_posn *posn)
 	struct dma_chan_status status;
 
 	/* total processed bytes count */
-	posn->dai_posn = dev->position;
+	posn->dai_posn = dd->total_data_processed;
 
 	platform_dai_wallclock(dev, &dd->wallclock);
 	posn->wallclock = dd->wallclock;
 
 	status.ipc_posn_data = &posn->comp_posn;
-	dma_status(dd->chan, &status, dev->direction);
+	dma_status_legacy(dd->chan, &status, dev->direction);
 
 	return 0;
 }
@@ -313,12 +345,12 @@ void dai_dma_position_update(struct comp_dev *dev)
 	uint32_t node_id;
 	uint32_t llp_data[2];
 
-	get_llp_reg_info(dd, &node_id, &llp_reg_offset);
+	get_llp_reg_info(dev, &node_id, &llp_reg_offset);
 	if (!node_id)
 		return;
 
 	status.ipc_posn_data = llp_data;
-	dma_status(dd->chan, &status, dev->direction);
+	dma_status_legacy(dd->chan, &status, dev->direction);
 
 	platform_dai_wallclock(dev, &dd->wallclock);
 

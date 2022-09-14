@@ -46,8 +46,6 @@ define(PIPE_HEADSET_PLAYBACK, `sof/pipe-mixer-`HSPROC'-dai-playback.m4')
 #
 # PCM0P --> volume     (pipe 1) --> HDA Analog (HDA Analog playback)
 # PCM0C <-- volume, EQ (pipe 2) <-- HDA Analog (HDA Analog capture)
-# PCM1P --> volume     (pipe 3) --> HDA Digital (HDA Digital playback)
-# PCM1C <-- volume, EQ (pipe 4) <-- HDA Digital (HDA Digital capture)
 # PCM3  ----> volume (pipe 7) ----> iDisp1 (HDMI/DP playback, BE link 3)
 # PCM4  ----> Volume (pipe 8) ----> iDisp2 (HDMI/DP playback, BE link 4)
 # PCM5  ----> volume (pipe 9) ----> iDisp3 (HDMI/DP playback, BE link 5)
@@ -61,20 +59,6 @@ ifdef(`HSPROC_FILTER2', `define(PIPELINE_FILTER2, HSPROC_FILTER2)', `undefine(`P
 # 1000us deadline with priority 0 on core 0
 PIPELINE_PCM_ADD(sof/pipe-highpass-capture.m4,
 	2, 0, 2, s24le,
-	1000, 0, 0,
-	48000, 48000, 48000)
-
-# Low Latency playback pipeline 3 on PCM 1 using max 2 channels of s24le.
-# 1000us deadline with priority 0 on core 0
-PIPELINE_PCM_ADD(sof/pipe-volume-playback.m4,
-	3, 1, 2, s24le,
-	1000, 0, 0,
-	48000, 48000, 48000)
-
-# Low Latency capture pipeline 4 on PCM 1 using max 2 channels of s24le.
-# 1000us deadline with priority 0 on core 0
-PIPELINE_PCM_ADD(sof/pipe-highpass-capture.m4,
-	4, 1, 2, s24le,
 	1000, 0, 0,
 	48000, 48000, 48000)
 
@@ -120,6 +104,20 @@ PIPELINE_PCM_ADD(sof/pipe-host-volume-playback.m4,
 	SCHEDULE_TIME_DOMAIN_TIMER,
 	PIPELINE_PLAYBACK_SCHED_COMP_1)
 
+# Deep buffer playback pipeline 31 on PCM 31 using max 2 channels of s32le
+# Set 1000us deadline on core 0 with priority 0.
+# TODO: Modify pipeline deadline to account for deep buffering
+ifdef(`DEEP_BUFFER',
+`
+PIPELINE_PCM_ADD(sof/pipe-host-volume-playback.m4,
+	31, 31, 2, s32le,
+	1000, 0, 0,
+	48000, 48000, 48000,
+	SCHEDULE_TIME_DOMAIN_TIMER,
+	PIPELINE_PLAYBACK_SCHED_COMP_1)
+'
+)
+
 # Undefine PIPELINE_FILTERx to avoid to propagate elsewhere, other endpoints
 # with filters blobs will need similar handling as HSPROC_FILTERx.
 undefine(`PIPELINE_FILTER1')
@@ -130,20 +128,6 @@ undefine(`PIPELINE_FILTER2')
 DAI_ADD(sof/pipe-dai-capture.m4,
         2, HDA, 1, Analog Playback and Capture,
 	PIPELINE_SINK_2, 2, s32le,
-	1000, 0, 0, SCHEDULE_TIME_DOMAIN_TIMER)
-
-# playback DAI is HDA Digital using 2 periods
-# Dai buffers use s32le format, 1000us deadline with priority 0 on core 0
-DAI_ADD(sof/pipe-dai-playback.m4,
-        3, HDA, 2, Digital Playback and Capture,
-        PIPELINE_SOURCE_3, 2, s32le,
-        1000, 0, 0, SCHEDULE_TIME_DOMAIN_TIMER)
-
-# capture DAI is HDA Digital using 2 periods
-# Dai buffers use s32le format, 1000us deadline with priority 0 on core 0
-DAI_ADD(sof/pipe-dai-capture.m4,
-        4, HDA, 3, Digital Playback and Capture,
-	PIPELINE_SINK_4, 2, s32le,
 	1000, 0, 0, SCHEDULE_TIME_DOMAIN_TIMER)
 
 # playback DAI is iDisp1 using 2 periods
@@ -173,11 +157,20 @@ SectionGraph."mixer-host" {
 	lines [
 		# connect mixer dai pipelines to PCM pipelines
 		dapm(PIPELINE_MIXER_1, PIPELINE_SOURCE_30)
+ifdef(`DEEP_BUFFER',
+`
+		dapm(PIPELINE_MIXER_1, PIPELINE_SOURCE_31)
+'
+)
 	]
 }
 
 PCM_DUPLEX_ADD(HDA Analog, 0, PIPELINE_PCM_30, PIPELINE_PCM_2)
-PCM_DUPLEX_ADD(HDA Digital, 1, PIPELINE_PCM_3, PIPELINE_PCM_4)
+ifdef(`DEEP_BUFFER',
+`
+PCM_PLAYBACK_ADD(HDA Analog Deep Buffer, 31, PIPELINE_PCM_31)
+'
+)
 PCM_PLAYBACK_ADD(HDMI1, 3, PIPELINE_PCM_7)
 PCM_PLAYBACK_ADD(HDMI2, 4, PIPELINE_PCM_8)
 PCM_PLAYBACK_ADD(HDMI3, 5, PIPELINE_PCM_9)
@@ -189,8 +182,7 @@ PCM_PLAYBACK_ADD(HDMI3, 5, PIPELINE_PCM_9)
 # HDA outputs
 DAI_CONFIG(HDA, 0, 4, Analog Playback and Capture,
 	HDA_CONFIG(HDA_CONFIG_DATA(HDA, 0, 48000, 2)))
-DAI_CONFIG(HDA, 1, 5, Digital Playback and Capture,
-	HDA_CONFIG(HDA_CONFIG_DATA(HDA, 1, 48000, 2)))
+
 # 3 HDMI/DP outputs (ID: 3,4,5)
 DAI_CONFIG(HDA, 4, 1, iDisp1,
 	HDA_CONFIG(HDA_CONFIG_DATA(HDA, 4, 48000, 2)))

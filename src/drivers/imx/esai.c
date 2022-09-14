@@ -8,8 +8,8 @@
 #include <sof/audio/component.h>
 #include <sof/drivers/edma.h>
 #include <sof/drivers/esai.h>
-#include <sof/drivers/interrupt.h>
-#include <sof/lib/alloc.h>
+#include <rtos/interrupt.h>
+#include <rtos/alloc.h>
 #include <sof/lib/dai.h>
 #include <sof/lib/dma.h>
 #include <sof/lib/uuid.h>
@@ -17,6 +17,8 @@
 #include <ipc/topology.h>
 #include <errno.h>
 #include <stdint.h>
+
+LOG_MODULE_REGISTER(esai, CONFIG_SOF_LOG_LEVEL);
 
 /* 889f6dcd-ddcd-4e05-aa5b-0d39f8bca961 */
 DECLARE_SOF_UUID("esai", esai_uuid, 0x889f6dcd, 0xddcd, 0x4e05,
@@ -396,6 +398,18 @@ static int esai_get_fifo(struct dai *dai, int direction, int stream_id)
 	}
 }
 
+static int esai_get_fifo_depth(struct dai *dai, int direction)
+{
+	switch (direction) {
+	case DAI_DIR_PLAYBACK:
+	case DAI_DIR_CAPTURE:
+		return dai->plat_data.fifo[direction].depth;
+	default:
+		dai_err(dai, "esai_get_fifo_depth(): Invalid direction");
+		return -EINVAL;
+	}
+}
+
 static int esai_get_hw_params(struct dai *dai,
 			      struct sof_ipc_stream_params *params,
 			      int dir)
@@ -426,6 +440,7 @@ const struct dai_driver esai_driver = {
 		.remove			= esai_remove,
 		.get_handshake		= esai_get_handshake,
 		.get_fifo		= esai_get_fifo,
+		.get_fifo_depth		= esai_get_fifo_depth,
 		.get_hw_params		= esai_get_hw_params,
 	},
 };

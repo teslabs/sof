@@ -10,14 +10,14 @@
  */
 
 #include <sof/debug/panic.h>
-#include <sof/drivers/interrupt.h>
+#include <rtos/interrupt.h>
 #include <sof/init.h>
 #include <sof/lib/cpu.h>
 #include <sof/lib/memory.h>
 #include <sof/lib/mm_heap.h>
 #include <sof/lib/notifier.h>
 #include <sof/lib/pm_runtime.h>
-#include <sof/lib/wait.h>
+#include <rtos/wait.h>
 #include <sof/platform.h>
 #include <sof/schedule/task.h>
 #include <sof/sof.h>
@@ -64,7 +64,7 @@ static inline void lp_sram_unpack(void)
 		size = *ptr++;
 
 		memcpy_s(dst, size, src, size);
-		dcache_writeback_region(dst, size);
+		dcache_writeback_region((__sparse_force void __sparse_cache *)dst, size);
 	}
 }
 #endif

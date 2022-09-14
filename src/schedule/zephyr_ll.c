@@ -5,15 +5,17 @@
 // Author: Guennadi Liakhovetski <guennadi.liakhovetski@linux.intel.com>
 
 #include <sof/list.h>
-#include <sof/spinlock.h>
+#include <rtos/spinlock.h>
 #include <sof/audio/component.h>
-#include <sof/drivers/interrupt.h>
+#include <rtos/interrupt.h>
 #include <sof/lib/notifier.h>
 #include <sof/schedule/ll_schedule_domain.h>
 #include <sof/schedule/schedule.h>
 #include <sof/schedule/task.h>
 
 #include <zephyr/kernel.h>
+
+LOG_MODULE_REGISTER(ll_schedule, CONFIG_SOF_LOG_LEVEL);
 
 /* 1547fe68-de0c-11eb-8461-3158a1294853 */
 DECLARE_SOF_UUID("zll-schedule", zll_sched_uuid, 0x1547fe68, 0xde0c, 0x11eb,
@@ -186,7 +188,6 @@ static void zephyr_ll_run(void *data)
 
 	while (list != &sch->tasks) {
 		enum task_state state;
-		struct comp_dev *sched_comp;
 		struct zephyr_ll_pdata *pdata;
 
 		task = container_of(list, struct task, list);
@@ -195,12 +196,6 @@ static void zephyr_ll_run(void *data)
 		if (task->state == SOF_TASK_STATE_CANCEL) {
 			list = list->next;
 			zephyr_ll_task_done(sch, task);
-			continue;
-		}
-
-		/* To be removed together with .start and .next_tick */
-		if (!domain_is_pending(sch->ll_domain, task, &sched_comp)) {
-			list = list->next;
 			continue;
 		}
 
@@ -250,8 +245,7 @@ static void zephyr_ll_run(void *data)
 				zephyr_ll_task_done(sch, task);
 				break;
 			default:
-				/* reschedule */
-				task->start = sch->ll_domain->next_tick;
+				break;
 			}
 		}
 	}
@@ -277,7 +271,6 @@ static int zephyr_ll_task_schedule_common(struct zephyr_ll *sch, struct task *ta
 	struct zephyr_ll_pdata *pdata;
 	struct task *task_iter;
 	struct list_item *list;
-	uint64_t delay = period ? period : start;
 	uint32_t flags;
 	int ret;
 
@@ -319,11 +312,6 @@ static int zephyr_ll_task_schedule_common(struct zephyr_ll *sch, struct task *ta
 			return 0;
 		}
 	}
-
-	task->start = k_uptime_ticks() + k_cyc_to_ticks_floor64(delay);
-	if (sch->ll_domain->next_tick != UINT64_MAX &&
-	    sch->ll_domain->next_tick > task->start)
-		task->start = sch->ll_domain->next_tick;
 
 	if (task->state == SOF_TASK_STATE_CANCEL) {
 		/* do not queue the same task again */
@@ -455,7 +443,8 @@ static int zephyr_ll_task_cancel(void *data, struct task *task)
 	 * kept atomic, so we have to lock here too.
 	 */
 	zephyr_ll_lock(sch, &flags);
-	task->state = SOF_TASK_STATE_CANCEL;
+	if (task->state != SOF_TASK_STATE_FREE)
+		task->state = SOF_TASK_STATE_CANCEL;
 	zephyr_ll_unlock(sch, &flags);
 
 	return 0;
@@ -523,8 +512,8 @@ int zephyr_ll_scheduler_init(struct ll_schedule_domain *domain)
 	struct zephyr_ll *sch;
 
 	if (domain->type != SOF_SCHEDULE_LL_TIMER) {
-		tr_err(&ll_tr, "zephyr_ll_scheduler_init(): unsupported domain %u",
-		       domain->type);
+		tr_warn(&ll_tr, "zephyr_ll_scheduler_init(): unsupported domain %u",
+			domain->type);
 		return -EINVAL;
 	}
 

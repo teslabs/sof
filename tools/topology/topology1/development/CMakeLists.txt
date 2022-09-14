@@ -27,10 +27,17 @@ set(TPLGS
 	"sof-imx8-src-cs42888\;sof-imx8-src-cs42888"
 	"sof-imx8-compr-aac-wm8960\;sof-imx8-compr-aac-wm8960"
 	"sof-imx8-compr-mp3-wm8960\;sof-imx8-compr-mp3-wm8960"
+	"sof-imx8-compr-pcm-wm8960\;sof-imx8-compr-pcm-wm8960"
+	"sof-imx8-compr-pcm-cap-wm8960\;sof-imx8-compr-pcm-cap-wm8960"
 	"sof-imx8mp-compr-aac-wm8960\;sof-imx8mp-compr-aac-wm8960"
 	"sof-imx8mp-compr-mp3-wm8960\;sof-imx8mp-compr-mp3-wm8960"
+	"sof-imx8mp-compr-pcm-wm8960\;sof-imx8mp-compr-pcm-wm8960"
+	"sof-imx8mp-compr-pcm-cap-wm8960\;sof-imx8mp-compr-pcm-cap-wm8960"
 	"sof-apl-nocodec-demux-eq-4ch4ch\;sof-apl-nocodec-demux-eq-4ch4ch"
 	"sof-apl-nocodec-demux-eq-2ch4ch\;sof-apl-nocodec-demux-eq-2ch4ch"
+
+	"sof-hda-generic-kwd\;sof-hda-generic-2ch-kwd\;-DCHANNELS=2\;-DDYNAMIC=1"
+	"sof-hda-generic-kwd\;sof-hda-generic-4ch-kwd\;-DCHANNELS=4\;-DDYNAMIC=1"
 )
 
 
@@ -50,6 +57,8 @@ set(TPLGS_UP
 	"sof-hda-generic\;sof-hda-generic-4ch-loud\;-DCHANNELS=4\;-DHSPROC=eq-iir-eq-fir-volume\;-DDMICPROC_FILTER1=eq_iir_coef_highpass_40hz_20db_48khz.m4\;-DDMIC16KPROC_FILTER1=eq_iir_coef_highpass_40hz_20db_16khz.m4\;-DHSPROC_FILTER1=eq_iir_coef_pass.m4\;-DHSPROC_FILTER2=eq_fir_coef_loudness.m4\;-DDYNAMIC=1"
 	"sof-hda-generic\;sof-hda-generic-multiband-drc\;-DCHANNELS=0\;-DHSPROC=multiband-drc\;-DDYNAMIC=1"
 	"sof-hda-generic\;sof-hda-generic-2ch-multiband-drc\;-DCHANNELS=2\;-DHSPROC=multiband-drc\;-DDMICPROC_FILTER1=eq_iir_coef_highpass_40hz_20db_48khz.m4\;-DDMIC16KPROC_FILTER1=eq_iir_coef_highpass_40hz_20db_16khz.m4\;-DDYNAMIC=1"
+	"sof-hda-generic\;sof-hda-generic-drc\;-DCHANNELS=0\;-DHSPROC=drc\;-DDYNAMIC=1"
+	"sof-hda-generic\;sof-hda-generic-2ch-drc\;-DCHANNELS=2\;-DHSPROC=drc\;-DDMICPROC_FILTER1=eq_iir_coef_highpass_40hz_20db_48khz.m4\;-DDMIC16KPROC_FILTER1=eq_iir_coef_highpass_40hz_20db_16khz.m4\;-DDYNAMIC=1"
 	"sof-tgl-rt711-rt1308\;sof-tgl-sdw-max98373-rt5682-dmic4ch-ampref\;-DCHANNELS=4\;-DEXT_AMP\;-DEXT_AMP_REF\;-DDMICPROC_FILTER1=eq_iir_coef_highpass_40hz_20db_48khz.m4\;-DDMIC16KPROC_FILTER1=eq_iir_coef_highpass_40hz_20db_16khz.m4\;-DPLATFORM=tgl"
 )
 

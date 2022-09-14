@@ -18,6 +18,7 @@
 #include <stdint.h>
 
 /* tracing */
+LOG_MODULE_REGISTER(dma_copy, CONFIG_SOF_LOG_LEVEL);
 
 /* 729bf8b5-e873-4bf5-9690-8e2a3fd33911 */
 DECLARE_SOF_UUID("dma-copy", dma_copy_uuid, 0x729bf8b5, 0xe873, 0x4bf5,
@@ -65,7 +66,21 @@ int dma_copy_to_host(struct dma_copy *dc, struct dma_sg_config *host_sg,
 	int ret;
 
 	/* tell gateway to copy */
-	ret = dma_copy(dc->chan, size, DMA_COPY_BLOCKING);
+	ret = dma_copy_legacy(dc->chan, size, DMA_COPY_BLOCKING);
+	if (ret < 0)
+		return ret;
+
+	/* bytes copied */
+	return size;
+}
+
+int dma_copy_to_host_nowait(struct dma_copy *dc, struct dma_sg_config *host_sg,
+			    int32_t host_offset, void *local_ptr, int32_t size)
+{
+	int ret;
+
+	/* tell gateway to copy */
+	ret = dma_copy_legacy(dc->chan, size, 0);
 	if (ret < 0)
 		return ret;
 
@@ -75,8 +90,10 @@ int dma_copy_to_host(struct dma_copy *dc, struct dma_sg_config *host_sg,
 
 #else /* CONFIG_DMA_GW */
 
-int dma_copy_to_host(struct dma_copy *dc, struct dma_sg_config *host_sg,
-		     int32_t host_offset, void *local_ptr, int32_t size)
+static int
+dma_copy_to_host_flags(struct dma_copy *dc, struct dma_sg_config *host_sg,
+		       int32_t host_offset, void *local_ptr, int32_t size,
+		       uint32_t flags)
 {
 	struct dma_sg_config config;
 	struct dma_sg_elem *host_sg_elem;
@@ -112,17 +129,31 @@ int dma_copy_to_host(struct dma_copy *dc, struct dma_sg_config *host_sg,
 	config.elem_array.count = 1;
 
 	/* start the DMA */
-	err = dma_set_config(dc->chan, &config);
+	err = dma_set_config_legacy(dc->chan, &config);
 	if (err < 0)
 		return err;
 
-	err = dma_copy(dc->chan, local_sg_elem.size,
-		       DMA_COPY_ONE_SHOT | DMA_COPY_BLOCKING);
+	err = dma_copy_legacy(dc->chan, local_sg_elem.size,
+			      flags);
 	if (err < 0)
 		return err;
 
 	/* bytes copied */
 	return local_sg_elem.size;
+}
+
+int dma_copy_to_host(struct dma_copy *dc, struct dma_sg_config *host_sg,
+		     int32_t host_offset, void *local_ptr, int32_t size)
+{
+	return dma_copy_to_host_flags(dc, host_sg, host_offset, local_ptr, size,
+				      DMA_COPY_ONE_SHOT | DMA_COPY_BLOCKING);
+}
+
+int dma_copy_to_host_nowait(struct dma_copy *dc, struct dma_sg_config *host_sg,
+			    int32_t host_offset, void *local_ptr, int32_t size)
+{
+	return dma_copy_to_host_flags(dc, host_sg, host_offset, local_ptr, size,
+				      DMA_COPY_ONE_SHOT);
 }
 
 #endif /* CONFIG_DMA_GW */
@@ -143,7 +174,7 @@ int dma_copy_new(struct dma_copy *dc)
 
 #if !CONFIG_DMA_GW
 	/* get DMA channel from DMAC0 */
-	dc->chan = dma_channel_get(dc->dmac, CONFIG_TRACE_CHANNEL);
+	dc->chan = dma_channel_get_legacy(dc->dmac, CONFIG_TRACE_CHANNEL);
 	if (!dc->chan) {
 		tr_err(&dmacpy_tr, "dma_copy_new(): dc->chan is NULL");
 		return -ENODEV;
@@ -158,7 +189,7 @@ int dma_copy_new(struct dma_copy *dc)
 int dma_copy_set_stream_tag(struct dma_copy *dc, uint32_t stream_tag)
 {
 	/* get DMA channel from DMAC */
-	dc->chan = dma_channel_get(dc->dmac, stream_tag - 1);
+	dc->chan = dma_channel_get_legacy(dc->dmac, stream_tag - 1);
 	if (!dc->chan) {
 		tr_err(&dmacpy_tr, "dma_copy_set_stream_tag(): dc->chan is NULL");
 		return -EINVAL;

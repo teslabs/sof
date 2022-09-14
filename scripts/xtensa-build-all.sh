@@ -5,14 +5,23 @@
 # stop on most errors
 set -e
 
-# Platforms with a toolchain available in the latest Docker image and
-# built by the -a option.
-DEFAULT_PLATFORMS=(  byt cht bdw hsw tgl tgl-h apl skl kbl cnl sue icl jsl \
-                    imx8 imx8x imx8m imx8ulp rn mt8186 mt8195 )
+# Platforms built and tested by default in CI using the `-a` option.
+# They must have a toolchain available in the latest Docker image.
+DEFAULT_PLATFORMS=(
+    tgl tgl-h
+    imx8 imx8x imx8m imx8ulp
+    rn rmb
+    mt8186 mt8195
+)
 
 # Work in progress can be added to this "staging area" without breaking
 # the -a option for everyone.
 SUPPORTED_PLATFORMS=( "${DEFAULT_PLATFORMS[@]}" )
+
+# Not actually "supported" in the main branch anymore (go to stable-v2.3
+# instead) but kept here for historical reasons and experimentation
+# convenience.
+SUPPORTED_PLATFORMS+=( byt hsw cht bdw apl skl kbl cnl sue icl jsl )
 
 BUILD_ROM=no
 BUILD_DEBUG=no
@@ -58,17 +67,20 @@ https://thesofproject.github.io/latest/developer_guides/firmware/cmake.html
 usage: $0 [options] platform(s)
 
        -r Build rom if available (gcc only)
-       -a Build all platforms which have a toolchain in the latest Docker image
+       -a Build all default platforms fully supported by the latest Docker image and CI
        -u Force CONFIG_MULTICORE=n
        -d Enable debug build
        -c Interactive menuconfig
        -o arg, copies src/arch/xtensa/configs/override/<arg>.config
-	  to the build directory after invoking CMake and before Make.
+          to the build directory after invoking CMake and before Make.
        -k Configure rimage to use a non-default \${RIMAGE_PRIVATE_KEY}
-           DEPRECATED: use the more flexible \${PRIVATE_KEY_OPTION} below.
+          DEPRECATED: use the more flexible \${PRIVATE_KEY_OPTION} below.
        -v Verbose Makefile log
-       -j n Set number of make build jobs. Jobs=#cores when no flag. \
-Infinte when not specified.
+       -i Optional IPC_VERSION: can be set to IPC3, IPC4 or an empty string.
+          If set to "IPCx" then CONFIG_IPC_MAJOR_x will be set. If set to
+          IPC4 then a platform specific overlay may be used.
+       -j n Set number of make build jobs. Jobs=#cores when no flag.
+            Infinite when not specified.
        -m path to MEU tool. CMake disables rimage signing which produces a
           .uns[igned] file signed by MEU. For a non-default key use the
           PRIVATE_KEY_OPTION, see below.
@@ -99,17 +111,18 @@ myXtensa/
 
 $ XTENSA_TOOLS_ROOT=/path/to/myXtensa $0 ...
 
-Supported platforms ${SUPPORTED_PLATFORMS[*]}
+Known platforms: ${SUPPORTED_PLATFORMS[*]}
 
 EOF
 }
 
 # parse the args
-while getopts "rudj:ckvao:m:" OPTION; do
+while getopts "rudi:j:ckvao:m:" OPTION; do
         case "$OPTION" in
 		r) BUILD_ROM=yes ;;
 		u) BUILD_FORCE_UP=yes ;;
 		d) BUILD_DEBUG=yes ;;
+		i) IPC_VERSION=$OPTARG ;;
 		j) BUILD_JOBS=$OPTARG ;;
 		c) MAKE_MENUCONFIG=yes ;;
 		k) USE_PRIVATE_KEY=yes ;;
@@ -151,7 +164,7 @@ for arg in "$@"; do
 	done
 	if [ "$platform" == "none" ]; then
 		echo "Error: Unknown platform specified: $arg"
-		echo "Supported platforms are: ${SUPPORTED_PLATFORMS[*]}"
+		echo "Known platforms are: ${SUPPORTED_PLATFORMS[*]}"
 		exit 1
 	fi
 done
@@ -159,7 +172,7 @@ done
 # check target platform(s) have been passed in
 if [ ${#PLATFORMS[@]} -eq 0 ];
 then
-	echo "Error: No platforms specified. Supported are: " \
+	echo "Error: No platform specified. Known platforms: " \
 		"${SUPPORTED_PLATFORMS[*]}"
 	print_usage
 	exit 1
@@ -281,6 +294,7 @@ do
 			HOST="xtensa-cnl-elf"
 			XTENSA_TOOLS_VERSION="RG-2017.8-linux"
 			HAVE_ROM='yes'
+			IPC4_CONFIG_OVERLAY="tigerlake_ipc4"
 			# default key for TGL
 			PLATFORM_PRIVATE_KEY="-D${SIGNING_TOOL}_PRIVATE_KEY=$SOF_TOP/keys/otc_private_key_3k.pem"
 			;;
@@ -326,9 +340,16 @@ do
 			;;
 		rn)
 			PLATFORM="renoir"
-			XTENSA_CORE="ACP_3_1_001_PROD"
+			XTENSA_CORE="ACP_3_1_001_PROD_2019_1"
 			HOST="xtensa-rn-elf"
-			XTENSA_TOOLS_VERSION="RF-2016.4-linux"
+			XTENSA_TOOLS_VERSION="RI-2019.1-linux"
+			;;
+		rmb)
+			PLATFORM="rembrandt"
+			ARCH="xtensa"
+			XTENSA_CORE="LX7_HiFi5_PROD"
+			HOST="xtensa-rmb-elf"
+			XTENSA_TOOLS_VERSION="RI-2019.1-linux"
 			;;
 		mt8186)
 			PLATFORM="mt8186"
@@ -415,6 +436,20 @@ do
 	then
 		cmake --build .  --  menuconfig
 	fi
+
+	case "$IPC_VERSION" in
+	    '') ;;
+	    IPC3)
+		echo 'CONFIG_IPC_MAJOR_3=y' >> override.config
+		;;
+	    IPC4)
+		test -z "$IPC4_CONFIG_OVERLAY" ||
+	    cat "${SOF_TOP}/src/arch/xtensa/configs/override/$IPC4_CONFIG_OVERLAY.config" \
+		    >> override.config
+		echo 'CONFIG_IPC_MAJOR_4=y' >> override.config
+	    ;;
+	    *) die "Invalid -i '%s' argument\n" "$IPC_VERSION" ;;
+	esac
 
 	if [[ "x$BUILD_DEBUG" == "xyes" ]]
 	then

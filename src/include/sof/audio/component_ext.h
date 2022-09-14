@@ -113,6 +113,8 @@ static inline int comp_dai_get_hw_params(struct comp_dev *dev,
 static inline int comp_cmd(struct comp_dev *dev, int cmd, void *data,
 			   int max_data_size)
 {
+	LOG_MODULE_DECLARE(component, CONFIG_SOF_LOG_LEVEL);
+
 	struct sof_ipc_ctrl_data *cdata = ASSUME_ALIGNED(data, 4);
 
 	if (cmd == COMP_CMD_SET_DATA &&
@@ -192,6 +194,7 @@ static inline int comp_copy(struct comp_dev *dev)
  */
 #ifndef __ZEPHYR__
 		perf_cnt_stamp(&dev->pcd, comp_perf_info, dev);
+		perf_cnt_average(&dev->pcd, comp_perf_avg_info, dev);
 #endif
 	}
 
@@ -351,11 +354,13 @@ static inline bool comp_is_scheduling_source(struct comp_dev *dev)
 }
 
 /**
- * Called to reallocate component in shared memory.
+ * Called to mark component as shared between cores
  * @param dev Component device.
- * @return Pointer to reallocated component device.
  */
-struct comp_dev *comp_make_shared(struct comp_dev *dev);
+static inline void comp_make_shared(struct comp_dev *dev)
+{
+	dev->is_shared = true;
+}
 
 static inline struct comp_driver_list *comp_drivers_get(void)
 {
@@ -378,6 +383,17 @@ static inline int comp_unbind(struct comp_dev *dev, void *data)
 
 	if (dev->drv->ops.unbind)
 		ret = dev->drv->ops.unbind(dev, data);
+
+	return ret;
+}
+
+static inline uint64_t comp_get_total_data_processed(struct comp_dev *dev, uint32_t stream_no,
+						     bool input)
+{
+	uint64_t ret = 0;
+
+	if (dev->drv->ops.get_total_data_processed)
+		ret = dev->drv->ops.get_total_data_processed(dev, stream_no, input);
 
 	return ret;
 }
